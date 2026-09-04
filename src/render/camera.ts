@@ -33,8 +33,17 @@ export type OrbitCamera = {
   setRadius(radius: number): void;
   /** 半径 boundingRadius の球が画面に収まる距離へカメラを引く。 */
   frame(boundingRadius: number): void;
-  /** 毎フレーム呼ぶ。目標値へ滑らかに追従してカメラ姿勢を更新する。 */
-  update(): void;
+  /**
+   * 自動旋回の速さ（rad/s）。0 で停止。
+   * クリア演出（SPEC.md 5.2-4）で立方体の周囲をゆっくり回すのに使う。enabled とは独立で、
+   * 手動操作を止めたまま（enabled = false）でも回り続ける。
+   */
+  setAutoRotate(speed: number): void;
+  /**
+   * 毎フレーム呼ぶ。目標値へ滑らかに追従してカメラ姿勢を更新する。
+   * deltaSeconds は自動旋回の進み具合にだけ使う（フレームレートに依存させないため）。
+   */
+  update(deltaSeconds?: number): void;
   /** イベントリスナを外す。 */
   dispose(): void;
 };
@@ -66,6 +75,8 @@ export function createOrbitCamera(
   let radius = goalRadius;
 
   let enabled = true;
+  // 自動旋回（クリア演出）。手動操作の enabled とは独立に効く
+  let autoRotateSpeed = 0;
   // 追跡中のポインタ。1 本なら旋回、2 本ならピンチズーム
   const pointers = new Map<number, { x: number; y: number }>();
   let pinchDistance = 0;
@@ -161,7 +172,14 @@ export function createOrbitCamera(
       applyRadius(fit * 1.15);
       radius = goalRadius;
     },
-    update(): void {
+    setAutoRotate(speed: number): void {
+      autoRotateSpeed = speed;
+    },
+    update(deltaSeconds = 1 / 60): void {
+      if (autoRotateSpeed !== 0) {
+        // タブ復帰などで delta が跳ねてもカメラが飛ばないよう上限を掛ける
+        goalAzimuth += autoRotateSpeed * THREE.MathUtils.clamp(deltaSeconds, 0, 0.1);
+      }
       azimuth += (goalAzimuth - azimuth) * DAMPING;
       polar += (goalPolar - polar) * DAMPING;
       radius += (goalRadius - radius) * DAMPING;
