@@ -11,6 +11,14 @@ import { placedVoxels, type Piece, type Placement } from '../core/piece';
  */
 const VOXEL_SIZE = 0.96;
 
+/**
+ * emissive にかける係数。通常時とハイライト時。
+ * 解釈: SPEC.md 3.3 の「縁取りかハイライト」は、ポストプロセスを増やさない方針（CLAUDE.md 開発ルール 5）に
+ * 合わせて emissive を上げる簡易ハイライトで表す。
+ */
+const BASE_EMISSIVE = 0.12;
+const HIGHLIGHT_EMISSIVE = 0.85;
+
 /** ピース群の描画。配置が変わったら updatePlacements を呼ぶ。 */
 export type PieceViews = {
   /** シーンに追加するルート。N×N×N の中心が原点に来るようオフセットしてある。 */
@@ -19,6 +27,8 @@ export type PieceViews = {
   readonly meshes: ReadonlyMap<number, THREE.InstancedMesh>;
   /** 配置を反映する。placements は全ピース分（順不同）。 */
   updatePlacements(placements: readonly Placement[]): void;
+  /** アクティブなピースを光らせる（null で解除）。 */
+  setHighlighted(pieceId: number | null): void;
   /** ジオメトリ / マテリアルを解放する。 */
   dispose(): void;
 };
@@ -44,7 +54,7 @@ function createPieceMaterial(color: THREE.Color): THREE.MeshPhysicalMaterial {
     clearcoat: 0.35,
     clearcoatRoughness: 0.35,
     envMapIntensity: 1.2,
-    emissive: color.clone().multiplyScalar(0.12),
+    emissive: color.clone().multiplyScalar(BASE_EMISSIVE),
   });
 }
 
@@ -60,12 +70,18 @@ export function createPieceViews(pieces: readonly Piece[], n: number): PieceView
   const meshes = new Map<number, THREE.InstancedMesh>();
   const pieceById = new Map<number, Piece>();
   const materials: THREE.MeshPhysicalMaterial[] = [];
+  // ハイライトの切り替えでピース色の emissive を作り直せるよう、色と材質を id で引けるようにする
+  const materialById = new Map<number, THREE.MeshPhysicalMaterial>();
+  const colorById = new Map<number, THREE.Color>();
 
   pieces.forEach((piece, index): void => {
     if (pieceById.has(piece.id)) throw new Error(`ピース id ${piece.id} が重複している`);
     pieceById.set(piece.id, piece);
-    const material = createPieceMaterial(pieceColor(index, pieces.length));
+    const color = pieceColor(index, pieces.length);
+    const material = createPieceMaterial(color);
     materials.push(material);
+    materialById.set(piece.id, material);
+    colorById.set(piece.id, color);
     const mesh = new THREE.InstancedMesh(geometry, material, piece.voxels.length);
     mesh.name = `piece-${piece.id}`;
     mesh.frustumCulled = false;
@@ -75,6 +91,8 @@ export function createPieceViews(pieces: readonly Piece[], n: number): PieceView
     meshes.set(piece.id, mesh);
     object.add(mesh);
   });
+
+  let highlighted: number | null = null;
 
   const matrix = new THREE.Matrix4();
 
@@ -105,6 +123,17 @@ export function createPieceViews(pieces: readonly Piece[], n: number): PieceView
     object,
     meshes,
     updatePlacements,
+    setHighlighted(pieceId: number | null): void {
+      if (highlighted === pieceId) return;
+      highlighted = pieceId;
+      for (const [id, material] of materialById) {
+        const color = colorById.get(id);
+        if (!color) continue;
+        material.emissive
+          .copy(color)
+          .multiplyScalar(id === pieceId ? HIGHLIGHT_EMISSIVE : BASE_EMISSIVE);
+      }
+    },
     dispose(): void {
       for (const mesh of meshes.values()) mesh.dispose();
       for (const material of materials) material.dispose();

@@ -11,6 +11,38 @@
       #ui { position: fixed; inset: 0; pointer-events: none; }
       #ui > * { pointer-events: auto; }
       #info { position: absolute; top: 8px; left: 12px; font-size: 12px; opacity: 0.6; pointer-events: none; }
+
+      /* プレイ中 HUD。スマホでは画面下部に寄せ、ボタンは 44px 以上（SPEC.md 6 章） */
+      /* 帯そのものは入力を透かし、ボタンだけが拾う（帯の余白でカメラ操作が死なないように） */
+      #hud {
+        position: absolute; left: 0; right: 0; bottom: 0;
+        display: flex; flex-direction: column; align-items: center; gap: 6px;
+        padding: 8px 8px calc(8px + env(safe-area-inset-bottom));
+        background: linear-gradient(to top, rgba(11, 15, 26, 0.85), rgba(11, 15, 26, 0));
+        pointer-events: none;
+      }
+      #hud-status { font-size: 12px; opacity: 0.75; text-align: center; }
+      .hud-row { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; }
+      .hud-button {
+        pointer-events: auto;
+        min-width: 76px; min-height: 44px; padding: 0 12px;
+        font: inherit; font-size: 14px; color: #e8ecf5;
+        background: rgba(40, 54, 84, 0.85); border: 1px solid rgba(150, 180, 230, 0.35);
+        border-radius: 10px; cursor: pointer; touch-action: manipulation;
+      }
+      .hud-button:hover:not(:disabled) { background: rgba(58, 78, 120, 0.9); }
+      .hud-button:active:not(:disabled) { background: rgba(80, 106, 158, 0.95); }
+      .hud-button:disabled { opacity: 0.35; cursor: default; }
+      .hud-button-wide { min-width: 116px; }
+
+      /* クリア通知。演出は M5 のタスクで作るので、ここでは文字だけ */
+      #hud-clear {
+        position: absolute; top: 34%; left: 0; right: 0;
+        text-align: center; font-size: 15vmin; font-weight: 700; letter-spacing: 0.12em;
+        color: #dff0ff; text-shadow: 0 0 24px rgba(140, 200, 255, 0.85);
+        pointer-events: none;
+      }
+      #hud-clear[hidden] { display: none; }
     </style>
   </head>
   <body>
