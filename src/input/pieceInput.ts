@@ -12,6 +12,7 @@ import * as THREE from 'three';
 import { addVec3, type Axis, type Vec3 } from '../core/grid';
 import type { OrbitCamera } from '../render/camera';
 import { axisStepVector, dragAxes, type DragAxes } from './axisMapping';
+import { pickSampleOffsets } from './pickSamples';
 import { createTwoFingerGesture, type Point } from './twoFingerGesture';
 
 /**
@@ -25,6 +26,22 @@ const MAX_PIXELS_PER_VOXEL = 160;
 
 /** ホイールの累積量がこれを超えるたびに奥行きを 1 マス動かす。 */
 const WHEEL_PIXELS_PER_STEP = 60;
+
+/**
+ * 近接ピックの許容半径（CSS ピクセル）。中心のレイが外れたときだけ、この半径内へずらしたレイを撃つ。
+ *
+ * 解釈: ボクセルには 0.04 マス分の溝があり（VOXEL_SIZE = 0.96）、細いピースの縁やスマホで小さく
+ * 見えているピースは 1 本のレイでは簡単に外れる。半径はポインタの種類で変える —
+ * 指の接触面は広く狙いも粗いので touch は 16 px、マウス / ペンは狙いが正確なので 8 px。
+ * どちらもボクセル 1 個の見かけの大きさ（MIN_PIXELS_PER_VOXEL = 14 px 前後）より小さいので、
+ * 隣のピースを誤って拾うより先に、狙ったピースの隙間を埋める効き方になる。
+ */
+const TOUCH_PICK_RADIUS_PX = 16;
+const PRECISE_PICK_RADIUS_PX = 8;
+
+/** サンプル点は半径ごとに固定なので、起動時に 1 度だけ作って使い回す。 */
+const TOUCH_PICK_OFFSETS = pickSampleOffsets(TOUCH_PICK_RADIUS_PX);
+const PRECISE_PICK_OFFSETS = pickSampleOffsets(PRECISE_PICK_RADIUS_PX);
 
 export type PieceInputOptions = {
   /** イベントを受けるキャンバス。 */
@@ -94,6 +111,13 @@ export function createPieceInput(options: PieceInputOptions): PieceInput {
   const cameraRight = new THREE.Vector3();
   const cameraUp = new THREE.Vector3();
   const cameraForward = new THREE.Vector3();
+  /**
+   * レイキャストの対象と結果。1 回の pointerdown で十数本のレイを撃つので、
+   * 配列は作り直さず中身だけ入れ替えて使い回す（GC を増やさない）。
+   * root.children には発光コアや稜線も混ざるため、対象はピース本体だけに絞る。
+   */
+  const pickTargets: THREE.Object3D[] = [];
+  const pickHits: THREE.Intersection[] = [];
 
   let selected: number | null = null;
   let drag: DragState | null = null;
@@ -150,21 +174,55 @@ export function createPieceInput(options: PieceInputOptions): PieceInput {
     return THREE.MathUtils.clamp(pixels, MIN_PIXELS_PER_VOXEL, MAX_PIXELS_PER_VOXEL);
   };
 
-  /** 画面座標のピースを拾う。何も無ければ null。 */
-  const pickPiece = (clientX: number, clientY: number): number | null => {
+  /** root.children から、ピース本体（userData.pieceId を持つもの）だけを対象配列へ集め直す。 */
+  const refreshPickTargets = (): void => {
+    pickTargets.length = 0;
+    for (const child of root.children) {
+      if (typeof child.userData['pieceId'] === 'number') pickTargets.push(child);
+    }
+  };
+
+  /**
+   * 画面座標のピースを拾う。何も無ければ null。
+   *
+   * 中心のレイが当たればそれを採用し、外れたときだけ近接サンプル（pickSampleOffsets）を撃つ。
+   * サンプルが複数当たったときはレイ原点に最も近い交差のピースを選ぶので、
+   * 「重なっているときは手前のピースを選ぶ」という中心レイの挙動と揃う。
+   */
+  const pickPiece = (clientX: number, clientY: number, pointerType: string): number | null => {
     const rect = domElement.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return null;
-    ndc.x = ((clientX - rect.left) / rect.width) * 2 - 1;
-    ndc.y = -((clientY - rect.top) / rect.height) * 2 + 1;
     camera.updateMatrixWorld();
     root.updateMatrixWorld();
-    raycaster.setFromCamera(ndc, camera);
-    // 1 ピース = 1 InstancedMesh なので、交差したメッシュから id を引けば足りる
-    for (const hit of raycaster.intersectObjects(root.children, false)) {
+    refreshPickTargets();
+    if (pickTargets.length === 0) return null;
+
+    // 解釈: pointerType は 'touch' / 'mouse' / 'pen' 以外（未対応ブラウザの ''）もあり得るので、
+    // touch だけを広い半径にして、それ以外は狙いが正確な側へ倒す
+    const offsets = pointerType === 'touch' ? TOUCH_PICK_OFFSETS : PRECISE_PICK_OFFSETS;
+    let nearestId: number | null = null;
+    let nearestDistance = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < offsets.length; i += 1) {
+      const offset = offsets[i];
+      if (offset === undefined) continue;
+      ndc.x = ((clientX + offset.dx - rect.left) / rect.width) * 2 - 1;
+      ndc.y = -((clientY + offset.dy - rect.top) / rect.height) * 2 + 1;
+      raycaster.setFromCamera(ndc, camera);
+      // intersectObjects は結果を手前から並べて返すので、先頭だけ見れば足りる
+      pickHits.length = 0;
+      raycaster.intersectObjects(pickTargets, false, pickHits);
+      const hit = pickHits[0];
+      if (hit === undefined) continue;
       const pieceId = hit.object.userData['pieceId'];
-      if (typeof pieceId === 'number') return pieceId;
+      if (typeof pieceId !== 'number') continue;
+      // 先頭は必ず中心のレイ。当たったならずらしたレイを撃つまでもない
+      if (i === 0) return pieceId;
+      if (hit.distance < nearestDistance) {
+        nearestDistance = hit.distance;
+        nearestId = pieceId;
+      }
     }
-    return null;
+    return nearestId;
   };
 
   const setSelected = (pieceId: number | null): void => {
@@ -225,7 +283,7 @@ export function createPieceInput(options: PieceInputOptions): PieceInput {
       return;
     }
 
-    const pieceId = pickPiece(event.clientX, event.clientY);
+    const pieceId = pickPiece(event.clientX, event.clientY, event.pointerType);
     if (pieceId === null) {
       // 何も無い場所 → 選択解除。カメラ旋回はこのあと bubble 段の OrbitCamera が受け取る
       setSelected(null);
