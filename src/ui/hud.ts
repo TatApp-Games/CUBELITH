@@ -94,7 +94,7 @@ export function createHud(container: HTMLElement, callbacks: HudCallbacks): Hud 
     for (const button of pieceControls) button.disabled = none;
     hint.textContent = none
       ? 'ピースをクリック / タップして選択'
-      : `選択中: ピース #${pieceId}（ドラッグで移動 / ホイールで奥行き）`;
+      : `選択中: ピース #${pieceId}（ドラッグで移動 / 2 本指スワイプ・ひねりで回転 / ピンチでズーム）`;
   };
   setSelected(null);
 

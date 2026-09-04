@@ -1,8 +1,18 @@
 // ピース群の描画。1 ピース = 1 InstancedMesh（CLAUDE.md 開発ルール 4 / SPEC.md 4 章）。
 // 位置・向きの解釈は core に任せ、ここは placedVoxels の結果を行列に落とすだけにする。
+//
+// ドローコールの内訳（SPEC.md 4 章。N=7 / M=40 でも「ピース数 + α」に収める）:
+//   M                ピース本体。ボクセル数によらず 1 ピース 1 回
+//   + 1              内部発光コア（glowCores。全ピース分をまとめた 1 つの InstancedMesh）
+//   + 1              解答空間の枠（createSolutionFrame の LineSegments）
+//   + 1（軽量モードのみ） 稜線の発光（edgeGlow。これも全ピースで 1 本）
+// ジオメトリは全ピースで 1 つを共有し、マテリアルだけをピースごとに持つ（色が違うため）。
+// すりガラスの屈折パスは three が opaque な物体だけをもう一度描くもので、ピース数には比例しない。
 
 import * as THREE from 'three';
+import { equalsVec3 } from '../core/grid';
 import { placedVoxels, type Piece, type Placement } from '../core/piece';
+import { createEdgeGlow, type EdgeGlow } from './edgeGlow';
 import { createGlowCores } from './glowCores';
 
 /**
@@ -44,8 +54,6 @@ const NO_OFFSET: ViewOffset = { x: 0, y: 0, z: 0 };
 export type PieceViews = {
   /** シーンに追加するルート。N×N×N の中心が原点に来るようオフセットしてある。 */
   readonly object: THREE.Group;
-  /** ピース id → その InstancedMesh。選択ハイライト（M3）から引けるように公開する。 */
-  readonly meshes: ReadonlyMap<number, THREE.InstancedMesh>;
   /** 全ピース色を混ぜた色。融合後の巨大クリスタルの色に使う（SPEC.md 5.2-2）。 */
   readonly blendedColor: THREE.Color;
   /** 配置を反映する。placements は全ピース分（順不同）。 */
@@ -104,26 +112,59 @@ function createPieceMaterial(color: THREE.Color): THREE.MeshPhysicalMaterial {
 }
 
 /**
+ * 軽量モードのマテリアル（SPEC.md 4 章の負荷対策）。
+ *
+ * transmission は three が画面をもう一度レンダリングして屈折用のテクスチャを作るため、
+ * 非力な端末では一気に重くなる。そこで半透明の MeshStandardMaterial に落とし、
+ * 失われる「厚み感」は稜線の発光（edgeGlow）と内部コアで補う。
+ * 切り替えは `?lite=1` / `?lite=0`、無指定なら端末判定（src/render/quality.ts）。
+ */
+function createLitePieceMaterial(color: THREE.Color): THREE.MeshStandardMaterial {
+  return new THREE.MeshStandardMaterial({
+    color,
+    roughness: 0.34,
+    metalness: 0,
+    transparent: true,
+    opacity: 0.66,
+    // 半透明のボクセルが重なる順で絵が変わらないよう、深度は書かない
+    depthWrite: false,
+    envMapIntensity: 1.3,
+    emissive: color.clone().multiplyScalar(BASE_EMISSIVE),
+  });
+}
+
+/** createPieceViews の任意設定。 */
+export type PieceViewsOptions = {
+  /** 軽量モード（transmission を使わない）。既定は false。 */
+  readonly lite?: boolean;
+};
+
+/**
  * ピース群の InstancedMesh を作る。ジオメトリは全ピースで 1 つを共有する。
  * n は解答空間のサイズで、立方体 [0, n-1]³ の中心が原点に来るようルートをずらすのに使う。
  */
-export function createPieceViews(pieces: readonly Piece[], n: number): PieceViews {
+export function createPieceViews(
+  pieces: readonly Piece[],
+  n: number,
+  options: PieceViewsOptions = {},
+): PieceViews {
+  const lite = options.lite ?? false;
   const geometry = new THREE.BoxGeometry(VOXEL_SIZE, VOXEL_SIZE, VOXEL_SIZE);
   const object = new THREE.Group();
   object.position.setScalar(-(n - 1) / 2);
 
   const meshes = new Map<number, THREE.InstancedMesh>();
   const pieceById = new Map<number, Piece>();
-  const materials: THREE.MeshPhysicalMaterial[] = [];
+  const materials: THREE.Material[] = [];
   // ハイライトの切り替えでピース色の emissive を作り直せるよう、色と材質を id で引けるようにする
-  const materialById = new Map<number, THREE.MeshPhysicalMaterial>();
+  const materialById = new Map<number, THREE.MeshStandardMaterial>();
   const colorById = new Map<number, THREE.Color>();
 
   pieces.forEach((piece, index): void => {
     if (pieceById.has(piece.id)) throw new Error(`ピース id ${piece.id} が重複している`);
     pieceById.set(piece.id, piece);
     const color = pieceColor(index, pieces.length);
-    const material = createPieceMaterial(color);
+    const material = lite ? createLitePieceMaterial(color) : createPieceMaterial(color);
     materials.push(material);
     materialById.set(piece.id, material);
     colorById.set(piece.id, color);
@@ -144,6 +185,20 @@ export function createPieceViews(pieces: readonly Piece[], n: number): PieceView
     return color;
   });
   object.add(cores.object);
+
+  // 軽量モードだけ稜線を足す。全ピースまとめて 1 ドローコールなので追加コストはほぼ無い
+  const edges: EdgeGlow | null = lite
+    ? createEdgeGlow(
+        pieces,
+        (pieceId): THREE.Color => {
+          const color = colorById.get(pieceId);
+          if (!color) throw new Error(`未知のピース id ${pieceId}`);
+          return color;
+        },
+        VOXEL_SIZE / 2,
+      )
+    : null;
+  if (edges) object.add(edges.object);
 
   // 融合後の巨大クリスタルの色（SPEC.md 5.2-2）。全ピース色の平均。
   // 色相を等間隔に散らしてあるので単純平均だと灰色に寄る。彩度と明度は下限を入れて持ち上げる
@@ -179,12 +234,14 @@ export function createPieceViews(pieces: readonly Piece[], n: number): PieceView
       const z = voxel.z + offset.z;
       matrix.makeTranslation(x, y, z);
       mesh.setMatrixAt(i, matrix);
-      // 発光コアはボクセルの中心に置く（ボクセル本体と同じ座標）
+      // 発光コアと稜線はボクセルの中心に置く（ボクセル本体と同じ座標）
       cores.setPosition(placement.pieceId, i, x, y, z);
+      edges?.setPosition(placement.pieceId, i, x, y, z);
     });
+    // frustumCulled を切ってあるので境界球は使わない（computeBoundingSphere は呼ばない）
     mesh.instanceMatrix.needsUpdate = true;
-    mesh.computeBoundingSphere();
     cores.flush();
+    edges?.flush();
   };
 
   /**
@@ -216,8 +273,14 @@ export function createPieceViews(pieces: readonly Piece[], n: number): PieceView
         throw new Error(`ピース id ${placement.pieceId} の配置が重複している`);
       }
       seen.add(placement.pieceId);
+      // 動いていないピースは行列を書き直さない。N=7 / M=40 でも 1 手あたりの更新が 1 ピース分で済む
+      const previous = lastPlacements.get(placement.pieceId);
+      const unchanged =
+        previous !== undefined &&
+        previous.orientation === placement.orientation &&
+        equalsVec3(previous.position, placement.position);
       lastPlacements.set(placement.pieceId, placement);
-      applyPlacement(placement);
+      if (!unchanged) applyPlacement(placement);
     }
     if (seen.size !== pieceById.size) {
       throw new Error(`配置の数が足りない (ピース ${pieceById.size} / 配置 ${seen.size})`);
@@ -226,7 +289,6 @@ export function createPieceViews(pieces: readonly Piece[], n: number): PieceView
 
   return {
     object,
-    meshes,
     blendedColor,
     updatePlacements,
     setHighlighted(pieceId: number | null): void {
@@ -256,6 +318,7 @@ export function createPieceViews(pieces: readonly Piece[], n: number): PieceView
       if (next === glowBoost) return;
       glowBoost = next;
       cores.setBoost(next);
+      edges?.setBoost(next);
       applyEmissive();
     },
     setPiecesVisible(visible: boolean): void {
@@ -264,6 +327,7 @@ export function createPieceViews(pieces: readonly Piece[], n: number): PieceView
     dispose(): void {
       offsets.clear();
       lastPlacements.clear();
+      edges?.dispose();
       cores.dispose();
       for (const mesh of meshes.values()) mesh.dispose();
       for (const material of materials) material.dispose();

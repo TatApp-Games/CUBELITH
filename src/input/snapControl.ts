@@ -26,13 +26,10 @@ export type SnapControl = {
   refresh(pieceId: number | null): void;
   /** 手を離したときに呼ぶ。吸い付く先があれば onSnap を出して true。 */
   release(pieceId: number): boolean;
-  /** 直近の refresh で見つかっている吸着先。無ければ null。 */
-  candidate(): Placement | null;
 };
 
 /** スナップの制御。ゲーム状態は placements() 越しに読むだけで、更新は onSnap に任せる。 */
 export function createSnapControl(options: SnapControlOptions): SnapControl {
-  let current: Placement | null = null;
   let hinted: number | null = null;
 
   const setHint = (pieceId: number | null): void => {
@@ -57,8 +54,7 @@ export function createSnapControl(options: SnapControlOptions): SnapControl {
 
   return {
     refresh(pieceId): void {
-      current = compute(pieceId);
-      setHint(current === null ? null : pieceId);
+      setHint(compute(pieceId) === null ? null : pieceId);
     },
 
     release(pieceId): boolean {
@@ -67,15 +63,10 @@ export function createSnapControl(options: SnapControlOptions): SnapControl {
       const from = options
         .placements()
         .find((placement): boolean => placement.pieceId === pieceId);
-      current = null;
       setHint(null);
       if (candidate === null || from === undefined) return false;
       options.onSnap(from, candidate);
       return true;
-    },
-
-    candidate(): Placement | null {
-      return current;
     },
   };
 }
