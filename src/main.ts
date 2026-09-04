@@ -1,5 +1,6 @@
 // エントリ。core でパズルを生成・散らし、render で描き、input と ui で操作させる（SPEC.md 8 章 M3）。
-// 難易度選択画面は M4、演出は M5 で作る。ここでは既定値か URL クエリで N / M / seed を決める。
+// マグネットスナップと SE は M4 の前半（SPEC.md 3.5 / 5.1）。難易度選択画面と演出は M4 後半以降で作る。
+// ここでは既定値か URL クエリで N / M / seed を決める。
 import * as THREE from 'three';
 import {
   generatePuzzle,
@@ -10,11 +11,15 @@ import {
   scatterPlacements,
 } from './core/generate';
 import { createGame } from './core/game';
+import { subVec3 } from './core/grid';
 import { placedVoxels, type Piece, type Placement } from './core/piece';
 import { createPieceInput } from './input/pieceInput';
+import { createSnapControl } from './input/snapControl';
+import { createSnapAudio } from './render/audio';
 import { createOrbitCamera } from './render/camera';
 import { createPieceViews, createSolutionFrame } from './render/pieces';
 import { createRenderContext } from './render/scene';
+import { createSnapMotion } from './render/snapMotion';
 import { createHud } from './ui/hud';
 
 /** SPEC.md 3.1 の既定（N=3 / M=4）。 */
@@ -84,11 +89,41 @@ context.scene.add(pieceViews.object, createSolutionFrame(n));
 const orbit = createOrbitCamera(context.camera, context.renderer.domElement);
 orbit.frame(scatterRadius(puzzle.pieces, initialPlacements, n));
 
+// マグネットスナップ（SPEC.md 3.5 / 5.1）。SE は WebAudio の合成音、補間は表示だけを動かす
+const snapAudio = createSnapAudio();
+const snapMotion = createSnapMotion((pieceId, offset): void => {
+  pieceViews.setOffset(pieceId, offset);
+});
+const snap = createSnapControl({
+  pieces: puzzle.pieces,
+  n,
+  placements: (): readonly Placement[] => game.placements(),
+  onHintChange: (pieceId): void => {
+    pieceViews.setSnapHint(pieceId);
+  },
+  onSnap: (from, to): void => {
+    // 論理上の配置は整数座標のまま即座に確定させ、見た目だけを 100〜150 ms かけて追いつかせる
+    game.move(to.pieceId, subVec3(to.position, from.position));
+    snapMotion.start(to.pieceId, subVec3(from.position, to.position));
+    snapAudio.playSnap();
+  },
+});
+
+// 自動再生制限があるので、最初のユーザー操作で AudioContext を作って resume する
+const unlockAudio = (): void => {
+  snapAudio.unlock();
+};
+window.addEventListener('pointerdown', unlockAudio, { capture: true });
+window.addEventListener('keydown', unlockAudio, { capture: true });
+
 // HUD → 操作。input / game はこの後で作るが、参照するのはボタンが押された時点なので問題ない
 const hud = createHud(ui, {
   onRotate: (axis, dir): void => {
     const pieceId = input.selectedPieceId();
-    if (pieceId !== null) game.rotate(pieceId, axis, dir);
+    if (pieceId === null) return;
+    // 回した先は別の場所なので、走っているスナップの補間は打ち切る
+    snapMotion.cancel(pieceId);
+    game.rotate(pieceId, axis, dir);
   },
   onDepth: (dir): void => {
     input.moveDepth(dir);
@@ -96,6 +131,7 @@ const hud = createHud(ui, {
   onReset: (): void => {
     // 同じ seed の散らし配置に戻す（SPEC.md 3.3「やり直し」）
     input.select(null);
+    for (const piece of puzzle.pieces) snapMotion.cancel(piece.id);
     game.reset(scatterPlacements(puzzle.pieces, n, seed));
   },
 });
@@ -108,6 +144,8 @@ const game = createGame(
   (placements, solved): void => {
     pieceViews.updatePlacements(placements);
     hud.setSolved(solved);
+    // 位置が変わったこのタイミングだけで候補を計算し直す（毎フレームは回さない）
+    snap.refresh(input.selectedPieceId());
   },
 );
 pieceViews.updatePlacements(game.placements());
@@ -123,9 +161,16 @@ const input = createPieceInput({
   onSelectionChange: (pieceId): void => {
     pieceViews.setHighlighted(pieceId);
     hud.setSelected(pieceId);
+    snap.refresh(pieceId);
   },
   onMove: (pieceId, delta): void => {
+    // 手で動かしたら前のスナップの補間は用済み
+    snapMotion.cancel(pieceId);
     game.move(pieceId, delta);
+  },
+  onRelease: (pieceId): void => {
+    // 手を離した瞬間に吸い付かせる（SPEC.md 3.5）
+    snap.release(pieceId);
   },
 });
 
@@ -137,4 +182,6 @@ ui.appendChild(info);
 
 context.start((): void => {
   orbit.update();
+  // スナップの補間（表示だけ）を進める
+  snapMotion.update();
 });

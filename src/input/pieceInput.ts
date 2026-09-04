@@ -35,6 +35,11 @@ export type PieceInputOptions = {
   readonly onSelectionChange: (pieceId: number | null) => void;
   /** ピースをグリッド上で delta マス動かす要求。 */
   readonly onMove: (pieceId: number, delta: Vec3) => void;
+  /**
+   * 操作していたピースから手を離したとき（pointerup / pointercancel）。
+   * マグネットスナップ（SPEC.md 3.5）を掛けるきっかけに使う。
+   */
+  readonly onRelease?: (pieceId: number) => void;
 };
 
 export type PieceInput = {
@@ -222,10 +227,22 @@ export function createPieceInput(options: PieceInputOptions): PieceInput {
 
   const onPointerUp = (event: PointerEvent): void => {
     if (!pointers.delete(event.pointerId)) return;
-    if (drag !== null && drag.pointerId === event.pointerId) drag = null;
+
+    // 手を離したのがどのピースの操作だったかを、状態を消す前に控えておく
+    let released: number | null = null;
+    if (drag !== null && drag.pointerId === event.pointerId) {
+      released = drag.pieceId;
+      drag = null;
+    } else if (twoFinger !== null && pointers.size < 2) {
+      released = selected;
+    }
     if (pointers.size < 2) twoFinger = null;
     if (domElement.hasPointerCapture(event.pointerId)) {
       domElement.releasePointerCapture(event.pointerId);
+    }
+    // 最後の指が離れてから吸い付かせる（2 本目が残っている間はまだ操作中）
+    if (released !== null && pointers.size === 0 && options.onRelease) {
+      options.onRelease(released);
     }
   };
 
