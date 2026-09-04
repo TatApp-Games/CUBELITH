@@ -19,6 +19,20 @@ const VOXEL_SIZE = 0.96;
 const BASE_EMISSIVE = 0.12;
 const HIGHLIGHT_EMISSIVE = 0.85;
 
+/**
+ * スナップ候補がある間の「薄く光る」状態（SPEC.md 5.1）。
+ * 解釈: 選択ハイライト（同じ色を濃くする）と見分けられるよう、色を白へ寄せて霞んだ発光にする。
+ */
+const SNAP_HINT_EMISSIVE = 0.6;
+const SNAP_HINT_WHITENESS = 0.75;
+const SNAP_HINT_TINT = new THREE.Color(0xffffff);
+
+/** 表示だけのずれ（ボクセル単位。補間中は整数にならない）。 */
+export type ViewOffset = { readonly x: number; readonly y: number; readonly z: number };
+
+/** ずれ無し。 */
+const NO_OFFSET: ViewOffset = { x: 0, y: 0, z: 0 };
+
 /** ピース群の描画。配置が変わったら updatePlacements を呼ぶ。 */
 export type PieceViews = {
   /** シーンに追加するルート。N×N×N の中心が原点に来るようオフセットしてある。 */
@@ -29,6 +43,13 @@ export type PieceViews = {
   updatePlacements(placements: readonly Placement[]): void;
   /** アクティブなピースを光らせる（null で解除）。 */
   setHighlighted(pieceId: number | null): void;
+  /** スナップ候補があるピースを薄く光らせる（null で解除）。選択ハイライトより優先する。 */
+  setSnapHint(pieceId: number | null): void;
+  /**
+   * 表示だけを offset だけずらす（null でずれ無し）。
+   * 論理上の配置は動かさないので、スナップの補間中でもクリア判定は整数座標のまま。
+   */
+  setOffset(pieceId: number, offset: ViewOffset | null): void;
   /** ジオメトリ / マテリアルを解放する。 */
   dispose(): void;
 };
@@ -93,26 +114,55 @@ export function createPieceViews(pieces: readonly Piece[], n: number): PieceView
   });
 
   let highlighted: number | null = null;
+  let snapHinted: number | null = null;
 
   const matrix = new THREE.Matrix4();
+  // 補間中の表示のずれと、そのやり直しに使う直近の配置
+  const offsets = new Map<number, ViewOffset>();
+  const lastPlacements = new Map<number, Placement>();
+
+  /** 1 ピース分のインスタンス行列を書き直す。表示のずれはここでだけ足す。 */
+  const applyPlacement = (placement: Placement): void => {
+    const piece = pieceById.get(placement.pieceId);
+    const mesh = meshes.get(placement.pieceId);
+    if (!piece || !mesh) throw new Error(`未知のピース id ${placement.pieceId}`);
+    const offset = offsets.get(placement.pieceId) ?? NO_OFFSET;
+    // ボクセルは立方体なので向きは placedVoxels の座標に織り込み済み。行列は平行移動だけでよい
+    placedVoxels(piece, placement).forEach((voxel, i): void => {
+      matrix.makeTranslation(voxel.x + offset.x, voxel.y + offset.y, voxel.z + offset.z);
+      mesh.setMatrixAt(i, matrix);
+    });
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.computeBoundingSphere();
+  };
+
+  /** 選択ハイライトとスナップ候補の発光を材質へ反映する。 */
+  const applyEmissive = (): void => {
+    for (const [id, material] of materialById) {
+      const color = colorById.get(id);
+      if (!color) continue;
+      if (id === snapHinted) {
+        material.emissive
+          .copy(color)
+          .lerp(SNAP_HINT_TINT, SNAP_HINT_WHITENESS)
+          .multiplyScalar(SNAP_HINT_EMISSIVE);
+        continue;
+      }
+      material.emissive
+        .copy(color)
+        .multiplyScalar(id === highlighted ? HIGHLIGHT_EMISSIVE : BASE_EMISSIVE);
+    }
+  };
 
   const updatePlacements = (placements: readonly Placement[]): void => {
     const seen = new Set<number>();
     for (const placement of placements) {
-      const piece = pieceById.get(placement.pieceId);
-      const mesh = meshes.get(placement.pieceId);
-      if (!piece || !mesh) throw new Error(`未知のピース id ${placement.pieceId}`);
       if (seen.has(placement.pieceId)) {
         throw new Error(`ピース id ${placement.pieceId} の配置が重複している`);
       }
       seen.add(placement.pieceId);
-      // ボクセルは立方体なので向きは placedVoxels の座標に織り込み済み。行列は平行移動だけでよい
-      placedVoxels(piece, placement).forEach((voxel, i): void => {
-        matrix.makeTranslation(voxel.x, voxel.y, voxel.z);
-        mesh.setMatrixAt(i, matrix);
-      });
-      mesh.instanceMatrix.needsUpdate = true;
-      mesh.computeBoundingSphere();
+      lastPlacements.set(placement.pieceId, placement);
+      applyPlacement(placement);
     }
     if (seen.size !== pieceById.size) {
       throw new Error(`配置の数が足りない (ピース ${pieceById.size} / 配置 ${seen.size})`);
@@ -126,15 +176,25 @@ export function createPieceViews(pieces: readonly Piece[], n: number): PieceView
     setHighlighted(pieceId: number | null): void {
       if (highlighted === pieceId) return;
       highlighted = pieceId;
-      for (const [id, material] of materialById) {
-        const color = colorById.get(id);
-        if (!color) continue;
-        material.emissive
-          .copy(color)
-          .multiplyScalar(id === pieceId ? HIGHLIGHT_EMISSIVE : BASE_EMISSIVE);
+      applyEmissive();
+    },
+    setSnapHint(pieceId: number | null): void {
+      if (snapHinted === pieceId) return;
+      snapHinted = pieceId;
+      applyEmissive();
+    },
+    setOffset(pieceId: number, offset: ViewOffset | null): void {
+      if (offset === null) {
+        if (!offsets.delete(pieceId)) return;
+      } else {
+        offsets.set(pieceId, offset);
       }
+      const placement = lastPlacements.get(pieceId);
+      if (placement !== undefined) applyPlacement(placement);
     },
     dispose(): void {
+      offsets.clear();
+      lastPlacements.clear();
       for (const mesh of meshes.values()) mesh.dispose();
       for (const material of materials) material.dispose();
       geometry.dispose();
