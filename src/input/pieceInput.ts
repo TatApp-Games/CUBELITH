@@ -1,11 +1,18 @@
 // ポインタ / タッチ入力をピース操作に変換する（SPEC.md 3.3）。
-// クリック / タップで選択、ドラッグでボクセル単位の移動、ホイール / 2 本指上下で奥行き移動。
-// 選択中はカメラの旋回・ズームを止め、非選択時のドラッグはカメラに任せる（排他）。
+// クリック / タップで選択、ドラッグでボクセル単位の移動、ホイールで奥行き移動、
+// 2 本指で 90 度回転とピンチズーム。
+// 選択中はカメラの旋回を止め、非選択時のドラッグはカメラに任せる（排他）。
+//
+// 2 本指の割り当て（解釈）: SPEC.md 3.3 は回転も奥行き移動も「2 本指スワイプ **または** UI ボタン」を
+// 認めている。両方を 2 本指に載せると区別できないので、**2 本指は回転（スワイプ / ひねり）と
+// ピンチズームに割り当て、奥行き移動は HUD の「奥へ / 手前へ」ボタンとホイールに寄せる**。
+// 認識そのものは Three.js に依存しない twoFingerGesture.ts が持つ。
 
 import * as THREE from 'three';
-import { addVec3, type Vec3 } from '../core/grid';
+import { addVec3, type Axis, type Vec3 } from '../core/grid';
 import type { OrbitCamera } from '../render/camera';
 import { axisStepVector, dragAxes, type DragAxes } from './axisMapping';
+import { createTwoFingerGesture, type Point } from './twoFingerGesture';
 
 /**
  * 1 マス動かすのに必要なドラッグ量（px）の下限・上限。
@@ -18,8 +25,6 @@ const MAX_PIXELS_PER_VOXEL = 160;
 
 /** ホイールの累積量がこれを超えるたびに奥行きを 1 マス動かす。 */
 const WHEEL_PIXELS_PER_STEP = 60;
-/** 2 本指の上下スワイプがこれだけ進むたびに奥行きを 1 マス動かす。 */
-const TWO_FINGER_PIXELS_PER_STEP = 48;
 
 export type PieceInputOptions = {
   /** イベントを受けるキャンバス。 */
@@ -35,6 +40,11 @@ export type PieceInputOptions = {
   readonly onSelectionChange: (pieceId: number | null) => void;
   /** ピースをグリッド上で delta マス動かす要求。 */
   readonly onMove: (pieceId: number, delta: Vec3) => void;
+  /**
+   * ピースを軸まわりに 90 度回す要求（2 本指ジェスチャ）。
+   * 軸は画面基準のジェスチャをカメラの向きでグリッド軸へ写したもの。
+   */
+  readonly onRotate?: (pieceId: number, axis: Axis, dir: 1 | -1) => void;
   /**
    * 操作していたピースから手を離したとき（pointerup / pointercancel）。
    * マグネットスナップ（SPEC.md 3.5）を掛けるきっかけに使う。
@@ -66,8 +76,6 @@ type DragState = {
   appliedUp: number;
 };
 
-/** 2 本指の上下スワイプの状態。 */
-type TwoFingerState = { lastY: number; accumulated: number };
 
 /** ホイールの delta を px 相当に正規化する（行 / ページ単位のブラウザ対策）。 */
 function wheelPixels(event: WheelEvent): number {
@@ -82,20 +90,37 @@ export function createPieceInput(options: PieceInputOptions): PieceInput {
   const raycaster = new THREE.Raycaster();
   const ndc = new THREE.Vector2();
   const scratch = new THREE.Vector3();
+  // カメラ基底の取り出し用。呼ばれるたびに Vector3 を作らないよう使い回す
+  const cameraRight = new THREE.Vector3();
+  const cameraUp = new THREE.Vector3();
+  const cameraForward = new THREE.Vector3();
 
   let selected: number | null = null;
   let drag: DragState | null = null;
-  let twoFinger: TwoFingerState | null = null;
   let wheelAccumulated = 0;
 
   /** 追跡中のポインタ（主ボタン / 指のみ）。 */
-  const pointers = new Map<number, { x: number; y: number }>();
+  const pointers = new Map<number, Point>();
 
-  const averageY = (): number => {
-    if (pointers.size === 0) return 0;
-    let sum = 0;
-    for (const p of pointers.values()) sum += p.y;
-    return sum / pointers.size;
+  // 2 本指ジェスチャ。ピースを選んでいる間だけ使う（未選択時のピンチはカメラ側が拾う）
+  const gesture = createTwoFingerGesture();
+  let gestureActive = false;
+  /**
+   * 操作が終わったピース。最後の指が離れた時点で onRelease に流す。
+   * 2 本指の操作は指が 1 本ずつ離れるので、1 本目が離れた時点では確定させられない。
+   */
+  let pendingRelease: number | null = null;
+
+  /**
+   * 追跡中のうち先に触れた 2 本を、触れた順で返す。
+   * Map は挿入順を保つので、途中で 3 本目が来ても基準の 2 本は入れ替わらない。
+   * 順が入れ替わるとひねりの向きが反転するため、順序の安定はここで担保する。
+   */
+  const firstTwoPointers = (): [Point, Point] | null => {
+    const list = [...pointers.values()];
+    const a = list[0];
+    const b = list[1];
+    return a && b ? [a, b] : null;
   };
 
   /**
@@ -104,11 +129,11 @@ export function createPieceInput(options: PieceInputOptions): PieceInput {
    */
   const currentAxes = (): DragAxes => {
     camera.updateMatrixWorld();
-    const right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
-    const up = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1);
+    cameraRight.setFromMatrixColumn(camera.matrixWorld, 0);
+    cameraUp.setFromMatrixColumn(camera.matrixWorld, 1);
     // カメラは自身の -Z を向く
-    const forward = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 2).negate();
-    return dragAxes(right, up, forward);
+    cameraForward.setFromMatrixColumn(camera.matrixWorld, 2).negate();
+    return dragAxes(cameraRight, cameraUp, cameraForward);
   };
 
   /** ピースの位置での「1 ボクセル = 何 px」。ドラッグ量の閾値に使う。 */
@@ -155,15 +180,48 @@ export function createPieceInput(options: PieceInputOptions): PieceInput {
     options.onMove(selected, axisStepVector(currentAxes().depth, dir));
   };
 
+  /**
+   * 2 本指ジェスチャを 1 回分処理する。
+   *
+   * 回転の軸は画面基準（Yaw = 画面の上、Pitch = 画面の右、Roll = 画面の奥）で決め、
+   * dragAxes でグリッド軸へ写す。向きは「見たまま回る」ように取る:
+   * 右へスワイプ → 手前の面が右へ（画面の上軸まわりに +90 度）、
+   * 上へスワイプ → 上の面が奥へ（画面の右軸まわりに −90 度）、
+   * 時計回りにひねる → 画面上でも時計回り（画面の奥軸まわりに +90 度）。
+   */
+  const applyTwoFinger = (a: Point, b: Point): void => {
+    const action = gesture.update(a, b);
+    if (action.kind === 'none') return;
+    if (action.kind === 'zoom') {
+      // 選択中は orbit.enabled = false なので、ズームだけ直接掛ける
+      orbit.zoomBy(action.scale);
+      return;
+    }
+    const pieceId = selected;
+    const onRotate = options.onRotate;
+    if (pieceId === null || onRotate === undefined) return;
+    const axes = currentAxes();
+    const step =
+      action.gesture === 'yaw'
+        ? axes.up
+        : action.gesture === 'pitch'
+          ? axes.right
+          : axes.depth;
+    const screenSign = action.gesture === 'pitch' ? -action.dir : action.dir;
+    onRotate(pieceId, step.axis, screenSign * step.sign > 0 ? 1 : -1);
+  };
+
   const onPointerDown = (event: PointerEvent): void => {
     // マウスは主ボタンだけを扱う（タッチ / ペンの button は 0）
     if (event.button !== 0) return;
     pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
 
     if (pointers.size >= 2) {
-      // 2 本目が来たらドラッグ移動をやめ、選択中なら奥行き操作に切り替える
+      // 2 本目が来たらドラッグ移動をやめ、選択中なら 2 本指ジェスチャに切り替える
       drag = null;
-      twoFinger = selected === null ? null : { lastY: averageY(), accumulated: 0 };
+      const pair = firstTwoPointers();
+      gestureActive = selected !== null && pair !== null;
+      if (gestureActive && pair) gesture.reset(pair[0], pair[1]);
       return;
     }
 
@@ -192,19 +250,9 @@ export function createPieceInput(options: PieceInputOptions): PieceInput {
     if (previous === undefined) return;
     pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
 
-    if (twoFinger !== null && pointers.size >= 2) {
-      const y = averageY();
-      // 上へスワイプ（clientY が減る）= 奥へ
-      twoFinger.accumulated += twoFinger.lastY - y;
-      twoFinger.lastY = y;
-      while (twoFinger.accumulated >= TWO_FINGER_PIXELS_PER_STEP) {
-        twoFinger.accumulated -= TWO_FINGER_PIXELS_PER_STEP;
-        moveDepth(1);
-      }
-      while (twoFinger.accumulated <= -TWO_FINGER_PIXELS_PER_STEP) {
-        twoFinger.accumulated += TWO_FINGER_PIXELS_PER_STEP;
-        moveDepth(-1);
-      }
+    if (gestureActive && pointers.size >= 2) {
+      const pair = firstTwoPointers();
+      if (pair) applyTwoFinger(pair[0], pair[1]);
       return;
     }
 
@@ -229,20 +277,21 @@ export function createPieceInput(options: PieceInputOptions): PieceInput {
     if (!pointers.delete(event.pointerId)) return;
 
     // 手を離したのがどのピースの操作だったかを、状態を消す前に控えておく
-    let released: number | null = null;
     if (drag !== null && drag.pointerId === event.pointerId) {
-      released = drag.pieceId;
+      pendingRelease = drag.pieceId;
       drag = null;
-    } else if (twoFinger !== null && pointers.size < 2) {
-      released = selected;
+    } else if (gestureActive && pointers.size < 2) {
+      pendingRelease = selected;
     }
-    if (pointers.size < 2) twoFinger = null;
+    if (pointers.size < 2) gestureActive = false;
     if (domElement.hasPointerCapture(event.pointerId)) {
       domElement.releasePointerCapture(event.pointerId);
     }
-    // 最後の指が離れてから吸い付かせる（2 本目が残っている間はまだ操作中）
-    if (released !== null && pointers.size === 0 && options.onRelease) {
-      options.onRelease(released);
+    // 最後の指が離れてから吸い付かせる（指が残っている間はまだ操作中）
+    if (pointers.size === 0 && pendingRelease !== null) {
+      const released = pendingRelease;
+      pendingRelease = null;
+      if (options.onRelease) options.onRelease(released);
     }
   };
 
@@ -285,7 +334,8 @@ export function createPieceInput(options: PieceInputOptions): PieceInput {
       domElement.removeEventListener('wheel', onWheel, captureOptions);
       pointers.clear();
       drag = null;
-      twoFinger = null;
+      gestureActive = false;
+      pendingRelease = null;
     },
   };
 }

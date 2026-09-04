@@ -27,10 +27,12 @@ export type OrbitCamera = {
   readonly camera: THREE.PerspectiveCamera;
   /** 旋回 / ズームの有効・無効。ピースを掴んでいる間は false にする。 */
   enabled: boolean;
-  /** 注視点を変える。 */
-  setTarget(target: THREE.Vector3): void;
-  /** 距離を変える（min/max でクランプ）。 */
-  setRadius(radius: number): void;
+  /**
+   * 距離に倍率を掛ける（< 1 で寄る）。
+   * ピースを掴んでいて enabled = false のときでも効く。ピース選択中の 2 本指ピンチ
+   * （src/input/pieceInput）から呼ばれ、ズームだけは常に使えるようにするため。
+   */
+  zoomBy(scale: number): void;
   /** 半径 boundingRadius の球が画面に収まる距離へカメラを引く。 */
   frame(boundingRadius: number): void;
   /**
@@ -159,11 +161,9 @@ export function createOrbitCamera(
         pinchDistance = 0;
       }
     },
-    setTarget(next: THREE.Vector3): void {
-      target.copy(next);
-    },
-    setRadius(next: number): void {
-      applyRadius(next);
+    zoomBy(scale: number): void {
+      if (!Number.isFinite(scale) || scale <= 0) return;
+      applyRadius(goalRadius * scale);
     },
     frame(boundingRadius: number): void {
       // 垂直画角に収まる距離。横長でない画面も考えて少し余裕を持たせる

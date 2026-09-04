@@ -22,8 +22,6 @@ export type SnapMotion = {
   update(nowMs?: number): void;
   /** 補間を打ち切り、表示を論理位置に戻す。 */
   cancel(pieceId: number): void;
-  /** 補間中のピースがあるか。 */
-  running(): boolean;
   /** すべての補間を打ち切る。 */
   dispose(): void;
 };
@@ -81,10 +79,6 @@ export function createSnapMotion(
 
     cancel(pieceId): void {
       clear(pieceId);
-    },
-
-    running(): boolean {
-      return tweens.size > 0;
     },
 
     dispose(): void {

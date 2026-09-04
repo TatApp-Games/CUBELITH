@@ -4,7 +4,6 @@
 // レンダラ・カメラ・SE はアプリ全体で 1 つを使い回し、パズルごとに作り直すもの（ピースの
 // InstancedMesh・枠・ゲーム状態・入力・スナップ）だけをセッションとしてまとめて破棄する。
 
-import * as THREE from 'three';
 import { createGame } from './core/game';
 import {
   generatePuzzle,
@@ -22,11 +21,14 @@ import { createSnapAudio } from './render/audio';
 import { createOrbitCamera } from './render/camera';
 import { createClearEffect, type ClearEffect } from './render/clearEffect';
 import { createPieceViews, createSolutionFrame } from './render/pieces';
+import { preferLiteMode } from './render/quality';
 import { createRenderContext } from './render/scene';
 import { createSnapMotion } from './render/snapMotion';
 import { createClearScreen } from './ui/clearScreen';
 import { DEFAULT_PIECE_COUNT, DEFAULT_SPACE_SIZE, randomSeed } from './ui/difficulty';
+import { createFpsMeter, type FpsMeter } from './ui/fpsMeter';
 import { createHud, type Hud } from './ui/hud';
+import { clampInt, readAppParams, withSettings } from './ui/params';
 import { unsettledPieceCount } from './ui/progress';
 import { createScreenManager } from './ui/screens';
 import { createTitleScreen } from './ui/titleScreen';
@@ -45,30 +47,24 @@ type Session = {
   dispose(): void;
 };
 
-/** URL クエリから整数を読む。無い / 数値でないときは undefined。 */
-function readInt(params: URLSearchParams, key: string): number | undefined {
-  const raw = params.get(key);
-  if (raw === null) return undefined;
-  const value = Number.parseInt(raw, 10);
-  return Number.isFinite(value) ? value : undefined;
+/**
+ * タイトル画面の初期値。クエリの読み取りと不正値の扱いは src/ui/params.ts が持つ。
+ * N / M は範囲外なら core が受け付ける範囲へ丸め、seed は不正なら乱数へフォールバックする。
+ */
+function initialSettings(query: ReturnType<typeof readAppParams>): Settings {
+  const n = clampInt(query.n, MIN_SPACE_SIZE, MAX_SPACE_SIZE) ?? DEFAULT_SPACE_SIZE;
+  const m = clampInt(query.m, MIN_PIECE_COUNT, maxPieces(n)) ?? DEFAULT_PIECE_COUNT;
+  // シードは SPEC.md 3.1 のとおり ?seed= で指定できる。無ければ毎回引き直す
+  return { n, m, seed: query.seed ?? randomSeed() };
 }
 
-/** タイトル画面の初期値。範囲外の指定は core が受け付ける範囲へ丸める。 */
-function readParams(search: string): Settings {
-  const params = new URLSearchParams(search);
-  const n = THREE.MathUtils.clamp(
-    readInt(params, 'n') ?? DEFAULT_SPACE_SIZE,
-    MIN_SPACE_SIZE,
-    MAX_SPACE_SIZE,
-  );
-  const m = THREE.MathUtils.clamp(
-    readInt(params, 'm') ?? DEFAULT_PIECE_COUNT,
-    MIN_PIECE_COUNT,
-    maxPieces(n),
-  );
-  // シードは SPEC.md 3.1 のとおり ?seed= で指定できる。無ければ毎回引き直す
-  const seed = readInt(params, 'seed') ?? randomSeed();
-  return { n, m, seed };
+/**
+ * 遊んでいる盤面の条件を URL に映す（履歴は増やさない）。
+ * 「もう一度」でシードが変わっても、URL をコピーすれば同じ盤面を再現できる。
+ */
+function syncLocation(settings: Settings): void {
+  const search = withSettings(window.location.search, settings);
+  window.history.replaceState(null, '', `${window.location.pathname}${search}`);
 }
 
 /** 散らした全ボクセルが収まる球の半径（中心は解答立方体の中心）。カメラの初期距離に使う。 */
@@ -97,11 +93,17 @@ if (!container) throw new Error('#app が見つからない');
 const ui = document.getElementById('ui');
 if (!ui) throw new Error('#ui が見つからない');
 
+const query = readAppParams(window.location.search);
+// 軽量モードは ?lite= が最優先、無指定なら端末判定（src/render/quality.ts）
+const lite = query.lite ?? preferLiteMode();
+
 const context = createRenderContext(container);
 const orbit = createOrbitCamera(context.camera, context.renderer.domElement);
 // マグネットスナップの SE（SPEC.md 3.5）。WebAudio の合成音なのでアプリ全体で 1 つでよい
 const snapAudio = createSnapAudio();
 const screens = createScreenManager(ui);
+// 計測用（SPEC.md には無い開発用の道具）。?fps=1 のときだけ作る
+const fpsMeter: FpsMeter | null = query.fps ? createFpsMeter(ui) : null;
 
 // 自動再生制限があるので、最初のユーザー操作で AudioContext を作って resume する
 const unlockAudio = (): void => {
@@ -143,7 +145,9 @@ function startSession(settings: Settings): void {
   const initial = scatterPlacements(puzzle.pieces, n, seed);
   const total = puzzle.pieces.length;
 
-  const pieceViews = createPieceViews(puzzle.pieces, n);
+  syncLocation(settings);
+
+  const pieceViews = createPieceViews(puzzle.pieces, n, { lite });
   const frame = createSolutionFrame(n);
   context.scene.add(pieceViews.object, frame.object);
   orbit.frame(scatterRadius(puzzle.pieces, initial, n));
@@ -243,6 +247,11 @@ function startSession(settings: Settings): void {
       snapMotion.cancel(pieceId);
       game.move(pieceId, delta);
     },
+    // 2 本指ジェスチャからの 90 度回転（HUD のボタンと同じ扱い）
+    onRotate: (pieceId, axis, dir): void => {
+      snapMotion.cancel(pieceId);
+      game.rotate(pieceId, axis, dir);
+    },
     onRelease: (pieceId): void => {
       // 手を離した瞬間に吸い付かせる（SPEC.md 3.5）
       snap.release(pieceId);
@@ -308,6 +317,8 @@ function startSession(settings: Settings): void {
 context.start((delta, elapsed): void => {
   orbit.update(delta);
   session?.update(delta, elapsed);
+  // ドローコールは「前のフレームの描画結果」を読む（このフレームぶんはまだ積まれていない）
+  fpsMeter?.update(delta, context.drawCalls());
 });
 
-showTitle(readParams(window.location.search));
+showTitle(initialSettings(query));
