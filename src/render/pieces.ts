@@ -238,8 +238,13 @@ export function createPieceViews(
       cores.setPosition(placement.pieceId, i, x, y, z);
       edges?.setPosition(placement.pieceId, i, x, y, z);
     });
-    // frustumCulled を切ってあるので境界球は使わない（computeBoundingSphere は呼ばない）
     mesh.instanceMatrix.needsUpdate = true;
+    // インスタンスを動かしたら境界球を捨てる。three の InstancedMesh.raycast は境界球との交差で
+    // まずふるいに掛け、null のときだけ作り直す。古い球を使い回すと、動かしたピースが球の外へ
+    // 出た瞬間にレイがまったく当たらなくなる（選択できないピースが出る原因）。
+    // frustumCulled = false はカリングを止めるだけで、レイキャストの境界球には効かない。
+    // 作り直しは動いた 1 ピース分だけで済む（updatePlacements が変化したピースにしか来ないため）
+    mesh.boundingSphere = null;
     cores.flush();
     edges?.flush();
   };
