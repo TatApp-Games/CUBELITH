@@ -203,16 +203,33 @@ export function createPieceViews(pieces: readonly Piece[], n: number): PieceView
   };
 }
 
+/** 解答空間の枠。作り直しのたびに GPU 資源を解放できるよう dispose を持つ。 */
+export type SolutionFrame = {
+  readonly object: THREE.LineSegments;
+  /** シーンから外し、ジオメトリ / マテリアルを解放する。 */
+  dispose(): void;
+};
+
 /**
  * 解答空間 N×N×N の位置を示すワイヤーフレーム枠。
  * ピースがどこへ集まればよいかの目安として薄く出す（PieceViews と同じ原点合わせで使う）。
  */
-export function createSolutionFrame(n: number): THREE.LineSegments {
+export function createSolutionFrame(n: number): SolutionFrame {
   const box = new THREE.BoxGeometry(n, n, n);
   const edges = new THREE.EdgesGeometry(box);
   box.dispose();
-  return new THREE.LineSegments(
-    edges,
-    new THREE.LineBasicMaterial({ color: 0x5f7fbf, transparent: true, opacity: 0.35 }),
-  );
+  const material = new THREE.LineBasicMaterial({
+    color: 0x5f7fbf,
+    transparent: true,
+    opacity: 0.35,
+  });
+  const object = new THREE.LineSegments(edges, material);
+  return {
+    object,
+    dispose(): void {
+      object.removeFromParent();
+      edges.dispose();
+      material.dispose();
+    },
+  };
 }

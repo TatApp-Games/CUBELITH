@@ -8,41 +8,81 @@
       html, body { margin: 0; height: 100%; overflow: hidden; background: #0b0f1a; color: #e8ecf5; font-family: system-ui, sans-serif; }
       #app { position: fixed; inset: 0; }
       #app canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+      /* UI は Three.js のキャンバスに重ねる。帯や背景は入力を透かし、押せる要素だけが拾う */
       #ui { position: fixed; inset: 0; pointer-events: none; }
       #ui > * { pointer-events: auto; }
-      #info { position: absolute; top: 8px; left: 12px; font-size: 12px; opacity: 0.6; pointer-events: none; }
 
-      /* プレイ中 HUD。スマホでは画面下部に寄せ、ボタンは 44px 以上（SPEC.md 6 章） */
-      /* 帯そのものは入力を透かし、ボタンだけが拾う（帯の余白でカメラ操作が死なないように） */
-      #hud {
-        position: absolute; left: 0; right: 0; bottom: 0;
-        display: flex; flex-direction: column; align-items: center; gap: 6px;
-        padding: 8px 8px calc(8px + env(safe-area-inset-bottom));
-        background: linear-gradient(to top, rgba(11, 15, 26, 0.85), rgba(11, 15, 26, 0));
-        pointer-events: none;
-      }
-      #hud-status { font-size: 12px; opacity: 0.75; text-align: center; }
-      .hud-row { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; }
-      .hud-button {
+      /* 3 画面で共通のボタン。指で押せるよう 44px 以上（SPEC.md 6 章） */
+      .ui-button {
         pointer-events: auto;
-        min-width: 76px; min-height: 44px; padding: 0 12px;
+        box-sizing: border-box;
+        min-width: 76px; min-height: 44px; padding: 0 14px;
         font: inherit; font-size: 14px; color: #e8ecf5;
         background: rgba(40, 54, 84, 0.85); border: 1px solid rgba(150, 180, 230, 0.35);
         border-radius: 10px; cursor: pointer; touch-action: manipulation;
       }
-      .hud-button:hover:not(:disabled) { background: rgba(58, 78, 120, 0.9); }
-      .hud-button:active:not(:disabled) { background: rgba(80, 106, 158, 0.95); }
-      .hud-button:disabled { opacity: 0.35; cursor: default; }
-      .hud-button-wide { min-width: 116px; }
+      .ui-button:hover:not(:disabled) { background: rgba(58, 78, 120, 0.9); }
+      .ui-button:active:not(:disabled) { background: rgba(80, 106, 158, 0.95); }
+      .ui-button:disabled { opacity: 0.35; cursor: default; }
+      .ui-button--wide { min-width: 128px; }
+      /* N / M の選択肢。数字だけなので幅は詰めるが、高さ 44px は保つ */
+      .ui-button--option { min-width: 56px; }
+      .ui-button--primary {
+        min-height: 52px; font-size: 16px; font-weight: 600;
+        background: rgba(70, 116, 190, 0.95); border-color: rgba(180, 210, 255, 0.55);
+      }
+      .ui-button--primary:hover:not(:disabled) { background: rgba(92, 140, 216, 0.95); }
+      .ui-button.is-selected {
+        background: rgba(96, 146, 224, 0.95); border-color: rgba(200, 226, 255, 0.8); font-weight: 600;
+      }
 
-      /* クリア通知。演出は M5 のタスクで作るので、ここでは文字だけ */
-      #hud-clear {
-        position: absolute; top: 34%; left: 0; right: 0;
-        text-align: center; font-size: 15vmin; font-weight: 700; letter-spacing: 0.12em;
+      /* プレイ中 HUD。スマホでは画面下部に寄せる（SPEC.md 6 章）。
+         帯そのものは入力を透かし、ボタンだけが拾う（帯の余白でカメラ操作が死なないように） */
+      #ui > #hud {
+        position: absolute; left: 0; right: 0; bottom: 0;
+        display: flex; flex-direction: column; align-items: center; gap: 6px;
+        padding: 8px 8px calc(8px + env(safe-area-inset-bottom));
+        background: linear-gradient(to top, rgba(11, 15, 26, 0.9), rgba(11, 15, 26, 0));
+        pointer-events: none;
+      }
+      #hud-status {
+        display: flex; flex-wrap: wrap; justify-content: center; gap: 2px 12px;
+        font-size: 12px; text-align: center;
+      }
+      #hud-remaining { font-weight: 600; }
+      #hud-hint { opacity: 0.7; }
+      .hud-row { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; }
+
+      /* タイトル / クリアの重ね画面。背景は透かしてパネルだけが入力を拾う */
+      #ui > .screen {
+        position: absolute; inset: 0;
+        display: flex; justify-content: center; padding: 16px;
+        pointer-events: none;
+      }
+      .screen--center { align-items: center; }
+      .screen--bottom { align-items: flex-end; padding-bottom: calc(16px + env(safe-area-inset-bottom)); }
+      .screen-panel {
+        pointer-events: auto; box-sizing: border-box;
+        width: min(420px, 100%); max-height: 100%; overflow-y: auto;
+        display: flex; flex-direction: column; align-items: center; gap: 14px;
+        padding: 20px; border-radius: 16px; text-align: center;
+        background: rgba(14, 20, 34, 0.92); border: 1px solid rgba(150, 180, 230, 0.25);
+        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+      }
+      .screen-title { margin: 0; font-size: 24px; font-weight: 600; letter-spacing: 0.08em; }
+      .screen-lead { margin: 0; font-size: 13px; opacity: 0.75; }
+      .screen-seed { font-size: 11px; opacity: 0.5; letter-spacing: 0.04em; }
+      .option-group { width: 100%; display: flex; flex-direction: column; align-items: center; gap: 6px; }
+      .option-label { font-size: 12px; opacity: 0.7; }
+      .option-row { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; }
+
+      /* クリアの見出し。発光・融合の演出は M5 のタスクで足す */
+      #clear-banner {
+        position: absolute; top: 16%; left: 0; right: 0;
+        text-align: center; font-size: 14vmin; font-weight: 700; letter-spacing: 0.12em;
         color: #dff0ff; text-shadow: 0 0 24px rgba(140, 200, 255, 0.85);
         pointer-events: none;
       }
-      #hud-clear[hidden] { display: none; }
     </style>
   </head>
   <body>
