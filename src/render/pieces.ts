@@ -3,6 +3,7 @@
 
 import * as THREE from 'three';
 import { placedVoxels, type Piece, type Placement } from '../core/piece';
+import { createGlowCores } from './glowCores';
 
 /**
  * ボクセル 1 個の 1 辺。
@@ -27,6 +28,12 @@ const SNAP_HINT_EMISSIVE = 0.6;
 const SNAP_HINT_WHITENESS = 0.75;
 const SNAP_HINT_TINT = new THREE.Color(0xffffff);
 
+/**
+ * クリア演出で発光を最大まで上げたときの emissive 係数（SPEC.md 5.2-1）。
+ * 内部コア（glowCores）と連動して、ピース本体そのものも明るくする。
+ */
+const CLEAR_EMISSIVE = 1.8;
+
 /** 表示だけのずれ（ボクセル単位。補間中は整数にならない）。 */
 export type ViewOffset = { readonly x: number; readonly y: number; readonly z: number };
 
@@ -39,6 +46,8 @@ export type PieceViews = {
   readonly object: THREE.Group;
   /** ピース id → その InstancedMesh。選択ハイライト（M3）から引けるように公開する。 */
   readonly meshes: ReadonlyMap<number, THREE.InstancedMesh>;
+  /** 全ピース色を混ぜた色。融合後の巨大クリスタルの色に使う（SPEC.md 5.2-2）。 */
+  readonly blendedColor: THREE.Color;
   /** 配置を反映する。placements は全ピース分（順不同）。 */
   updatePlacements(placements: readonly Placement[]): void;
   /** アクティブなピースを光らせる（null で解除）。 */
@@ -50,6 +59,15 @@ export type PieceViews = {
    * 論理上の配置は動かさないので、スナップの補間中でもクリア判定は整数座標のまま。
    */
   setOffset(pieceId: number, offset: ViewOffset | null): void;
+  /**
+   * 内部発光コアの明滅を進める（SPEC.md 4 章）。elapsedSeconds は起動からの経過秒。
+   * ピースごとに位相をずらしたサイン波で呼吸する。
+   */
+  updateGlow(elapsedSeconds: number): void;
+  /** クリア演出の発光ブースト（0 = 平常、1 = 最大）。コアとピース本体の両方に効く。 */
+  setGlowBoost(amount: number): void;
+  /** ピース群（本体 + コア）の表示。融合演出（SPEC.md 5.2-2）で false にする。 */
+  setPiecesVisible(visible: boolean): void;
   /** ジオメトリ / マテリアルを解放する。 */
   dispose(): void;
 };
@@ -62,19 +80,25 @@ function pieceColor(index: number, count: number): THREE.Color {
 /**
  * すりガラス（SPEC.md 4 章）。transmission を使うので transparent は立てない
  * （three は transmission > 0 のマテリアルを専用パスで描くため、透明扱いにすると描画順が乱れる）。
- * 質感の追い込みは M5 で行う。ここは形が見えれば十分。
+ *
+ * M5 での追い込み: roughness は SPEC.md の 0.4〜0.6 の中で「すり」感が出る 0.52、ior は
+ * ガラスの実測値 1.5、clearcoat を強めて表面のツヤを足し、attenuation でボクセルの厚みぶん
+ * 色が乗るようにした。Fake 屈折（画面空間の歪み）は SPEC.md 4 章・10 章のとおり初版スコープ外。
  */
 function createPieceMaterial(color: THREE.Color): THREE.MeshPhysicalMaterial {
   return new THREE.MeshPhysicalMaterial({
     color,
-    roughness: 0.45,
+    roughness: 0.52,
     metalness: 0,
-    transmission: 0.85,
-    thickness: 0.9,
-    ior: 1.45,
-    clearcoat: 0.35,
-    clearcoatRoughness: 0.35,
-    envMapIntensity: 1.2,
+    transmission: 0.92,
+    thickness: 1.1,
+    ior: 1.5,
+    // 厚みぶんだけピース色が濃く乗る。1 ボクセル分の距離を基準にする
+    attenuationColor: color.clone(),
+    attenuationDistance: 2.4,
+    clearcoat: 0.7,
+    clearcoatRoughness: 0.2,
+    envMapIntensity: 1.5,
     emissive: color.clone().multiplyScalar(BASE_EMISSIVE),
   });
 }
@@ -113,8 +137,29 @@ export function createPieceViews(pieces: readonly Piece[], n: number): PieceView
     object.add(mesh);
   });
 
+  // 内部発光コア（SPEC.md 4 章）。全ピース分をまとめて 1 セットにする
+  const cores = createGlowCores(pieces, (pieceId): THREE.Color => {
+    const color = colorById.get(pieceId);
+    if (!color) throw new Error(`未知のピース id ${pieceId}`);
+    return color;
+  });
+  object.add(cores.object);
+
+  // 融合後の巨大クリスタルの色（SPEC.md 5.2-2）。全ピース色の平均。
+  // 色相を等間隔に散らしてあるので単純平均だと灰色に寄る。彩度と明度は下限を入れて持ち上げる
+  const blendedColor = new THREE.Color(0x8fd3ff);
+  if (colorById.size > 0) {
+    blendedColor.setRGB(0, 0, 0);
+    for (const color of colorById.values()) blendedColor.add(color);
+    blendedColor.multiplyScalar(1 / colorById.size);
+    const hsl = { h: 0, s: 0, l: 0 };
+    blendedColor.getHSL(hsl);
+    blendedColor.setHSL(hsl.h, Math.max(hsl.s, 0.5), Math.max(hsl.l, 0.62));
+  }
+
   let highlighted: number | null = null;
   let snapHinted: number | null = null;
+  let glowBoost = 0;
 
   const matrix = new THREE.Matrix4();
   // 補間中の表示のずれと、そのやり直しに使う直近の配置
@@ -129,14 +174,23 @@ export function createPieceViews(pieces: readonly Piece[], n: number): PieceView
     const offset = offsets.get(placement.pieceId) ?? NO_OFFSET;
     // ボクセルは立方体なので向きは placedVoxels の座標に織り込み済み。行列は平行移動だけでよい
     placedVoxels(piece, placement).forEach((voxel, i): void => {
-      matrix.makeTranslation(voxel.x + offset.x, voxel.y + offset.y, voxel.z + offset.z);
+      const x = voxel.x + offset.x;
+      const y = voxel.y + offset.y;
+      const z = voxel.z + offset.z;
+      matrix.makeTranslation(x, y, z);
       mesh.setMatrixAt(i, matrix);
+      // 発光コアはボクセルの中心に置く（ボクセル本体と同じ座標）
+      cores.setPosition(placement.pieceId, i, x, y, z);
     });
     mesh.instanceMatrix.needsUpdate = true;
     mesh.computeBoundingSphere();
+    cores.flush();
   };
 
-  /** 選択ハイライトとスナップ候補の発光を材質へ反映する。 */
+  /**
+   * 選択ハイライト・スナップ候補・クリア演出の発光を材質へ反映する。
+   * クリア演出のブーストは他のどの状態よりも優先し、全ピースが連動して明るくなる。
+   */
   const applyEmissive = (): void => {
     for (const [id, material] of materialById) {
       const color = colorById.get(id);
@@ -145,12 +199,13 @@ export function createPieceViews(pieces: readonly Piece[], n: number): PieceView
         material.emissive
           .copy(color)
           .lerp(SNAP_HINT_TINT, SNAP_HINT_WHITENESS)
-          .multiplyScalar(SNAP_HINT_EMISSIVE);
+          .multiplyScalar(THREE.MathUtils.lerp(SNAP_HINT_EMISSIVE, CLEAR_EMISSIVE, glowBoost));
         continue;
       }
+      const base = id === highlighted ? HIGHLIGHT_EMISSIVE : BASE_EMISSIVE;
       material.emissive
         .copy(color)
-        .multiplyScalar(id === highlighted ? HIGHLIGHT_EMISSIVE : BASE_EMISSIVE);
+        .multiplyScalar(THREE.MathUtils.lerp(base, CLEAR_EMISSIVE, glowBoost));
     }
   };
 
@@ -172,6 +227,7 @@ export function createPieceViews(pieces: readonly Piece[], n: number): PieceView
   return {
     object,
     meshes,
+    blendedColor,
     updatePlacements,
     setHighlighted(pieceId: number | null): void {
       if (highlighted === pieceId) return;
@@ -192,9 +248,23 @@ export function createPieceViews(pieces: readonly Piece[], n: number): PieceView
       const placement = lastPlacements.get(pieceId);
       if (placement !== undefined) applyPlacement(placement);
     },
+    updateGlow(elapsedSeconds: number): void {
+      cores.update(elapsedSeconds);
+    },
+    setGlowBoost(amount: number): void {
+      const next = THREE.MathUtils.clamp(amount, 0, 1);
+      if (next === glowBoost) return;
+      glowBoost = next;
+      cores.setBoost(next);
+      applyEmissive();
+    },
+    setPiecesVisible(visible: boolean): void {
+      object.visible = visible;
+    },
     dispose(): void {
       offsets.clear();
       lastPlacements.clear();
+      cores.dispose();
       for (const mesh of meshes.values()) mesh.dispose();
       for (const material of materials) material.dispose();
       geometry.dispose();

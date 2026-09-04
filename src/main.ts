@@ -20,6 +20,7 @@ import { createPieceInput, type PieceInput } from './input/pieceInput';
 import { createSnapControl } from './input/snapControl';
 import { createSnapAudio } from './render/audio';
 import { createOrbitCamera } from './render/camera';
+import { createClearEffect, type ClearEffect } from './render/clearEffect';
 import { createPieceViews, createSolutionFrame } from './render/pieces';
 import { createRenderContext } from './render/scene';
 import { createSnapMotion } from './render/snapMotion';
@@ -36,8 +37,11 @@ type Settings = { readonly n: number; readonly m: number; readonly seed: number 
 
 /** パズル 1 回分。作り直しのたびに dispose して GPU 資源とリスナを手放す。 */
 type Session = {
-  /** 毎フレーム呼ぶ（スナップの補間を進める）。 */
-  update(): void;
+  /**
+   * 毎フレーム呼ぶ（スナップの補間・内部コアの明滅・クリア演出を進める）。
+   * delta は前フレームからの秒数、elapsed は起動からの経過秒。
+   */
+  update(delta: number, elapsed: number): void;
   dispose(): void;
 };
 
@@ -152,6 +156,8 @@ function startSession(settings: Settings): void {
   let hud: Hud | null = null;
   let input: PieceInput | null = null;
   let finished = false;
+  // クリア演出（SPEC.md 5.2）。クリアするまでは null
+  let clearEffect: ClearEffect | null = null;
 
   const snap = createSnapControl({
     pieces: puzzle.pieces,
@@ -177,6 +183,24 @@ function startSession(settings: Settings): void {
     input?.dispose();
     input = null;
     hud = null;
+    // 演出中は操作を無効化する（SPEC.md 5.2-4）。カメラの自動旋回は enabled と独立に効く
+    orbit.enabled = false;
+    // 完成した立方体を主役にするので、解答空間の枠は引っ込める
+    frame.object.visible = false;
+    clearEffect = createClearEffect({
+      scene: context.scene,
+      n,
+      color: pieceViews.blendedColor,
+      setGlow: (amount): void => {
+        pieceViews.setGlowBoost(amount);
+      },
+      setPiecesVisible: (visible): void => {
+        pieceViews.setPiecesVisible(visible);
+      },
+      setAutoRotate: (speed): void => {
+        orbit.setAutoRotate(speed);
+      },
+    });
     screens.show('clear', (host): Screen =>
       createClearScreen(host, {
         n,
@@ -226,14 +250,22 @@ function startSession(settings: Settings): void {
   });
 
   session = {
-    update(): void {
+    update(delta, elapsed): void {
       snapMotion.update();
+      // 内部発光コアの呼吸（SPEC.md 4 章）。ピースごとに位相がずれている
+      pieceViews.updateGlow(elapsed);
+      clearEffect?.update(delta);
     },
     dispose(): void {
       finished = true;
       input?.dispose();
       input = null;
       hud = null;
+      // 「もう一度」「難易度を変える」でここに来る。演出とカメラ旋回はここで解除する
+      clearEffect?.dispose();
+      clearEffect = null;
+      orbit.setAutoRotate(0);
+      orbit.enabled = true;
       snapMotion.dispose();
       snap.refresh(null);
       context.scene.remove(pieceViews.object);
@@ -273,9 +305,9 @@ function startSession(settings: Settings): void {
   if (game.solved()) showClear();
 }
 
-context.start((): void => {
-  orbit.update();
-  session?.update();
+context.start((delta, elapsed): void => {
+  orbit.update(delta);
+  session?.update(delta, elapsed);
 });
 
 showTitle(readParams(window.location.search));
