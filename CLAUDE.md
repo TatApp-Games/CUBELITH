@@ -27,6 +27,9 @@ src/ui/       画面と HUD（HTML）
 tests/        Vitest。core の全公開関数にテストを付ける
 ```
 
+座標は `Vec3 = { x, y, z }`（読み取り専用のオブジェクト）で統一する。向きは 0..23 の整数 id で、`composeOrientation(a, b)` は「a を適用してから b」の順（`src/core/grid.ts`）。
+ピースの局所原点は重心に最も近いボクセル（同点は座標の辞書順で最小）。`createPiece` / `normalizePiece` がそこを (0,0,0) に揃える（`src/core/piece.ts`）。
+
 ## 開発ルール
 
 1. **`src/core` は Three.js に依存しない**。生成・判定・スナップの正しさは `npm test` で保証する。core に関数を足したらテストも足す
