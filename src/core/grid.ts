@@ -179,7 +179,7 @@ export function composeOrientation(a: number, b: number): number {
 
 /**
  * 現在の向きに、ワールドの軸まわりの 90 度回転を 1 段重ねた向きを返す。
- * SPEC.md 3.3 の Pitch / Yaw / Roll の ± ボタンはこれを呼ぶ。
+ * SPEC.md 3.3 の Pitch / Yaw / Roll の 90 度回転。2 本指ジェスチャや回転モードのスナップが呼ぶ。
  */
 export function rotateOrientation(orientation: number, axis: Axis, dir: 1 | -1): number {
   const step = AXIS_ROTATION_ID[axis];
