@@ -53,6 +53,11 @@ export type PieceInputOptions = {
   readonly orbit: OrbitCamera;
   /** ピースの現在のグリッド座標。ドラッグ感度の基準にする。 */
   readonly gridPositionOf: (pieceId: number) => Vec3 | undefined;
+  /**
+   * そのピースが固定中か。固定中のピースは「選択はできるが動かせない」
+   * （固定解除するために選ぶ必要があるので、選択だけは通す）。
+   */
+  readonly isLocked?: (pieceId: number) => boolean;
   /** 選択が変わったとき（解除は null）。 */
   readonly onSelectionChange: (pieceId: number | null) => void;
   /** ピースをグリッド上で delta マス動かす要求。 */
@@ -121,6 +126,9 @@ export function createPieceInput(options: PieceInputOptions): PieceInput {
 
   let selected: number | null = null;
   let drag: DragState | null = null;
+
+  /** 固定中なら true。isLocked を渡さなければ常に false（固定の概念が無い呼び出し側）。 */
+  const isLocked = (pieceId: number): boolean => options.isLocked?.(pieceId) ?? false;
   let wheelAccumulated = 0;
 
   /** 追跡中のポインタ（主ボタン / 指のみ）。 */
@@ -234,7 +242,7 @@ export function createPieceInput(options: PieceInputOptions): PieceInput {
   };
 
   const moveDepth = (dir: 1 | -1): void => {
-    if (selected === null) return;
+    if (selected === null || isLocked(selected)) return;
     options.onMove(selected, axisStepVector(currentAxes().depth, dir));
   };
 
@@ -257,7 +265,8 @@ export function createPieceInput(options: PieceInputOptions): PieceInput {
     }
     const pieceId = selected;
     const onRotate = options.onRotate;
-    if (pieceId === null || onRotate === undefined) return;
+    // ズーム（上の分岐）は固定中でも効かせる。回るのは固定していないピースだけ
+    if (pieceId === null || onRotate === undefined || isLocked(pieceId)) return;
     const axes = currentAxes();
     const step =
       action.gesture === 'yaw'
@@ -290,6 +299,8 @@ export function createPieceInput(options: PieceInputOptions): PieceInput {
       return;
     }
     setSelected(pieceId);
+    // 固定中のピースは選ぶだけ。ドラッグ移動は始めない
+    if (isLocked(pieceId)) return;
     drag = {
       pointerId: event.pointerId,
       pieceId,
@@ -349,7 +360,8 @@ export function createPieceInput(options: PieceInputOptions): PieceInput {
     if (pointers.size === 0 && pendingRelease !== null) {
       const released = pendingRelease;
       pendingRelease = null;
-      if (options.onRelease) options.onRelease(released);
+      // 固定中のピースはスナップさせない（吸い付いて動いてしまわないように）
+      if (options.onRelease && !isLocked(released)) options.onRelease(released);
     }
   };
 
