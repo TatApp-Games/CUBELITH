@@ -226,7 +226,8 @@ function startSession(settings: Settings): void {
     pieceViews.updatePlacements(placements);
     hud?.setRemaining(unsettledPieceCount(puzzle.pieces, placements, n), total);
     // 位置が変わったこのタイミングだけで候補を計算し直す（毎フレームは回さない）
-    snap.refresh(input?.selectedPieceId() ?? null);
+    const active = input?.selectedPieceId() ?? null;
+    snap.refresh(active !== null && game.lockKindOf(active) !== null ? null : active);
     if (solved) showClear();
   });
 
@@ -237,10 +238,14 @@ function startSession(settings: Settings): void {
     orbit,
     gridPositionOf: (pieceId): Placement['position'] | undefined =>
       game.placementOf(pieceId)?.position,
+    // 固定中のピースは選べるが動かせない（ドラッグ・奥行き・2 本指回転・スナップを止める）
+    isLocked: (pieceId): boolean => game.lockKindOf(pieceId) !== null,
     onSelectionChange: (pieceId): void => {
       pieceViews.setHighlighted(pieceId);
       hud?.setSelected(pieceId);
-      snap.refresh(pieceId);
+      hud?.setLock(pieceId === null ? 'none' : (game.lockKindOf(pieceId) ?? 'none'));
+      // 固定中のピースは吸い付かないので候補も出さない
+      snap.refresh(pieceId !== null && game.lockKindOf(pieceId) !== null ? null : pieceId);
     },
     onMove: (pieceId, delta): void => {
       // 手で動かしたら前のスナップの補間は用済み
@@ -300,6 +305,10 @@ function startSession(settings: Settings): void {
         input?.select(null);
         for (const piece of puzzle.pieces) snapMotion.cancel(piece.id);
         game.reset(scatterPlacements(puzzle.pieces, n, seed));
+        // reset は手動固定を解く（ヒントの固定は残る）。アイコンも実際の状態へ揃え直す
+        for (const piece of puzzle.pieces) {
+          pieceViews.setLockIcon(piece.id, game.lockKindOf(piece.id));
+        }
       },
       onBackToTitle: (): void => {
         showTitle({ n, m, seed: randomSeed() });
@@ -307,6 +316,25 @@ function startSession(settings: Settings): void {
       onNext: (): void => {
         // 難易度はそのままシードだけ引き直す（クリア画面の「もう一度」と同じ扱い）
         startSession({ n, m, seed: randomSeed() });
+      },
+      onToggleLock: (): void => {
+        const pieceId = input?.selectedPieceId() ?? null;
+        if (pieceId === null) return;
+        const kind = game.lockKindOf(pieceId);
+        // ヒントで置いたピース（金ロック）は解除できない
+        if (kind === 'hint') return;
+        if (kind === null) {
+          game.lock(pieceId, 'manual');
+          // 固定した位置で止めるので、走っているスナップの補間は打ち切る
+          snapMotion.cancel(pieceId);
+        } else {
+          game.unlock(pieceId);
+        }
+        const next = game.lockKindOf(pieceId);
+        pieceViews.setLockIcon(pieceId, next);
+        hud?.setLock(next ?? 'none');
+        // 固定したら候補を消し、解除したら計算し直す
+        snap.refresh(next === null ? pieceId : null);
       },
     }),
   );

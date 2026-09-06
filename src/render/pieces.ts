@@ -6,6 +6,7 @@
 //   + 1              内部発光コア（glowCores。全ピース分をまとめた 1 つの InstancedMesh）
 //   + 1              解答空間の枠（createSolutionFrame の LineSegments）
 //   + 1（軽量モードのみ） 稜線の発光（edgeGlow。これも全ピースで 1 本）
+//   + 固定中のピース数  ロックアイコンの Sprite（lockIcons。固定していなければ 0）
 // ジオメトリは全ピースで 1 つを共有し、マテリアルだけをピースごとに持つ（色が違うため）。
 // すりガラスの屈折パスは three が opaque な物体だけをもう一度描くもので、ピース数には比例しない。
 
@@ -14,6 +15,7 @@ import { equalsVec3 } from '../core/grid';
 import { placedVoxels, type Piece, type Placement } from '../core/piece';
 import { createEdgeGlow, type EdgeGlow } from './edgeGlow';
 import { createGlowCores } from './glowCores';
+import { createLockIcons, type LockIconKind } from './lockIcons';
 
 /**
  * ボクセル 1 個の 1 辺。
@@ -74,6 +76,11 @@ export type PieceViews = {
   updateGlow(elapsedSeconds: number): void;
   /** クリア演出の発光ブースト（0 = 平常、1 = 最大）。コアとピース本体の両方に効く。 */
   setGlowBoost(amount: number): void;
+  /**
+   * 固定（ロック）を示すアイコンを出す / 消す（null で消す）。
+   * 位置はそのピースの配置後ボクセルの重心なので、動かせば追従する。
+   */
+  setLockIcon(pieceId: number, kind: LockIconKind | null): void;
   /** ピース群（本体 + コア）の表示。融合演出（SPEC.md 5.2-2）で false にする。 */
   setPiecesVisible(visible: boolean): void;
   /** ジオメトリ / マテリアルを解放する。 */
@@ -200,6 +207,10 @@ export function createPieceViews(
     : null;
   if (edges) object.add(edges.object);
 
+  // 固定中のピースに出す南京錠アイコン。Sprite は固定したときにだけ作られる
+  const lockIcons = createLockIcons();
+  object.add(lockIcons.object);
+
   // 融合後の巨大クリスタルの色（SPEC.md 5.2-2）。全ピース色の平均。
   // 色相を等間隔に散らしてあるので単純平均だと灰色に寄る。彩度と明度は下限を入れて持ち上げる
   const blendedColor = new THREE.Color(0x8fd3ff);
@@ -227,8 +238,13 @@ export function createPieceViews(
     const mesh = meshes.get(placement.pieceId);
     if (!piece || !mesh) throw new Error(`未知のピース id ${placement.pieceId}`);
     const offset = offsets.get(placement.pieceId) ?? NO_OFFSET;
+    // ロックアイコンを置く「ピースの中心」= 配置後ボクセルの重心（局所原点は端に寄ることがある）
+    let sumX = 0;
+    let sumY = 0;
+    let sumZ = 0;
     // ボクセルは立方体なので向きは placedVoxels の座標に織り込み済み。行列は平行移動だけでよい
-    placedVoxels(piece, placement).forEach((voxel, i): void => {
+    const voxels = placedVoxels(piece, placement);
+    voxels.forEach((voxel, i): void => {
       const x = voxel.x + offset.x;
       const y = voxel.y + offset.y;
       const z = voxel.z + offset.z;
@@ -237,7 +253,12 @@ export function createPieceViews(
       // 発光コアと稜線はボクセルの中心に置く（ボクセル本体と同じ座標）
       cores.setPosition(placement.pieceId, i, x, y, z);
       edges?.setPosition(placement.pieceId, i, x, y, z);
+      sumX += x;
+      sumY += y;
+      sumZ += z;
     });
+    const count = Math.max(voxels.length, 1);
+    lockIcons.setPosition(placement.pieceId, sumX / count, sumY / count, sumZ / count);
     mesh.instanceMatrix.needsUpdate = true;
     // インスタンスを動かしたら境界球を捨てる。three の InstancedMesh.raycast は境界球との交差で
     // まずふるいに掛け、null のときだけ作り直す。古い球を使い回すと、動かしたピースが球の外へ
@@ -326,12 +347,17 @@ export function createPieceViews(
       edges?.setBoost(next);
       applyEmissive();
     },
+    setLockIcon(pieceId: number, kind: LockIconKind | null): void {
+      if (!pieceById.has(pieceId)) throw new Error(`未知のピース id ${pieceId}`);
+      lockIcons.set(pieceId, kind);
+    },
     setPiecesVisible(visible: boolean): void {
       object.visible = visible;
     },
     dispose(): void {
       offsets.clear();
       lastPlacements.clear();
+      lockIcons.dispose();
       edges?.dispose();
       cores.dispose();
       for (const mesh of meshes.values()) mesh.dispose();
