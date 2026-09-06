@@ -1,17 +1,13 @@
 // プレイ中の HUD（SPEC.md 6 章）。素の HTML + CSS で作り、Three.js のキャンバスに重ねる。
 // 上から「ステータス行 / ピース操作行（選択中だけ表示）/ フッター行（常時表示）」の 3 段構成。
+// 回転と奥行きはボタンを置かず、ジェスチャ / ギズモ / ホイールに任せる（SPEC.md 3.3）。
 // スマホ向けに画面下部へ寄せ、ボタンは 44 px 以上（サイズの保証は index.html の .ui-button）。
 // クリア表示はクリア画面（clearScreen.ts）が担うので、ここでは持たない。
 
-import type { Axis } from '../core/grid';
 import type { Screen } from './screens';
 import { createButton, setSelected as setSelectedStyle } from './widgets';
 
 export type HudCallbacks = {
-  /** Pitch / Yaw / Roll の ± 回転。 */
-  readonly onRotate: (axis: Axis, dir: 1 | -1) => void;
-  /** 奥行き移動（+1 = カメラから遠ざかる）。 */
-  readonly onDepth: (dir: 1 | -1) => void;
   /** 同じ seed の散らし配置に戻す（SPEC.md 3.3「やり直し」）。 */
   readonly onReset: () => void;
   /** タイトル（難易度選択）へ戻る。 */
@@ -29,9 +25,9 @@ export type HudCallbacks = {
 /** HUD の作りに関わる設定（難易度で変わるもの）。 */
 export type HudOptions = {
   /**
-   * パズルの回転が「あり」なら true。false のときは回転に関わるボタン
-   * （Pitch / Yaw / Roll の 6 個と「回転 / 回転解除」）を生成しない（disabled ではなく出さない）。
-   * 奥行き移動と固定 / 固定解除は回転と関係ないので残す。
+   * パズルの回転が「あり」なら true。false のときは回転モードのトグル
+   * （「回転 / 回転解除」）を生成しない（disabled ではなく出さない）。
+   * 固定 / 固定解除は回転と関係ないので残す。
    */
   readonly allowRotation: boolean;
 };
@@ -65,20 +61,6 @@ export type Hud = Screen & {
   setHintEnabled(enabled: boolean): void;
 };
 
-/** 回転ボタンの並び。ラベルは SPEC.md 6 章の Pitch± / Yaw± / Roll±。 */
-const ROTATE_BUTTONS: readonly {
-  readonly label: string;
-  readonly axis: Axis;
-  readonly dir: 1 | -1;
-}[] = [
-  { label: 'Pitch +', axis: 'x', dir: 1 },
-  { label: 'Pitch −', axis: 'x', dir: -1 },
-  { label: 'Yaw +', axis: 'y', dir: 1 },
-  { label: 'Yaw −', axis: 'y', dir: -1 },
-  { label: 'Roll +', axis: 'z', dir: 1 },
-  { label: 'Roll −', axis: 'z', dir: -1 },
-];
-
 /** container（既定は #ui）に HUD を作る。 */
 export function createHud(
   container: HTMLElement,
@@ -98,8 +80,8 @@ export function createHud(
   status.append(remaining, hint);
   root.appendChild(status);
 
-  // ピースに紐づく操作（90 度回転 6 個 + 奥行き 2 個 + 回転モード 1 個 + 固定 1 個）。
-  // 選択中のピースが無いときは行ごと隠す。回転なしの難易度では回転に関わる分を作らない
+  // ピースに紐づく操作（回転モードのトグル 1 個 + 固定 1 個）。
+  // 選択中のピースが無いときは行ごと隠す。回転なしの難易度では回転モードのトグルを作らない
   const pieceControls = document.createElement('div');
   pieceControls.id = 'hud-piece-controls';
 
@@ -107,28 +89,8 @@ export function createHud(
   // ボタンを見せないために disabled にする
   const movementButtons: HTMLButtonElement[] = [];
 
-  if (allowRotation) {
-    const rotateRow = document.createElement('div');
-    rotateRow.className = 'hud-row';
-    for (const spec of ROTATE_BUTTONS) {
-      const button = createButton(spec.label, 'ui-button', (): void => {
-        callbacks.onRotate(spec.axis, spec.dir);
-      });
-      movementButtons.push(button);
-      rotateRow.appendChild(button);
-    }
-    pieceControls.appendChild(rotateRow);
-  }
-
   const moveRow = document.createElement('div');
   moveRow.className = 'hud-row';
-  const depthFar = createButton('奥へ', 'ui-button', (): void => {
-    callbacks.onDepth(1);
-  });
-  const depthNear = createButton('手前へ', 'ui-button', (): void => {
-    callbacks.onDepth(-1);
-  });
-  movementButtons.push(depthFar, depthNear);
   // 回転モードのトグル。オンの間はドラッグが連続回転になり、離すと最寄りの 90 度へスナップする。
   // 回転なしの難易度では作らない（null のまま）
   const rotateModeButton = allowRotation
@@ -141,7 +103,6 @@ export function createHud(
   // 固定トグル。ラベルを状態で入れ替える（'none' → 固定 / それ以外 → 固定解除）
   const lockButton = createButton('固定', 'ui-button', callbacks.onToggleLock);
   lockButton.id = 'hud-lock';
-  moveRow.append(depthFar, depthNear);
   if (rotateModeButton !== null) moveRow.appendChild(rotateModeButton);
   moveRow.appendChild(lockButton);
   pieceControls.appendChild(moveRow);

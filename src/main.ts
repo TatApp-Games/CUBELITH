@@ -395,7 +395,7 @@ function startSession(settings: Settings): void {
       snapMotion.cancel(pieceId);
       game.move(pieceId, delta);
     },
-    // 2 本指ジェスチャからの 90 度回転（HUD のボタンと同じ扱い）
+    // 2 本指ジェスチャからの 90 度回転
     onRotate: (pieceId, axis, dir): void => {
       snapMotion.cancel(pieceId);
       game.rotate(pieceId, axis, dir);
@@ -412,7 +412,7 @@ function startSession(settings: Settings): void {
     // 指を離したら最寄りの向き（24 通り）へスナップして確定させる。
     // 解釈: ドラッグ中の表示は重心まわりに回すが、確定は SPEC.md 3.3 のとおり局所原点まわりの
     // 回転（位置はそのまま向き id だけを差し替える）なので、確定の瞬間にピースが半マス前後
-    // ずれて見えることがある。HUD の 90 度回転ボタンや 2 本指回転と同じ動きに揃えている
+    // ずれて見えることがある。2 本指ジェスチャの 90 度回転と同じ動きに揃えている
     onFreeRotateEnd: (pieceId, quaternion): void => {
       const placement = game.placementOf(pieceId);
       if (placement !== undefined) {
@@ -461,16 +461,6 @@ function startSession(settings: Settings): void {
 
   hud = screens.show('play', (host): Hud =>
     createHud(host, {
-      onRotate: (axis, dir): void => {
-        const pieceId = input?.selectedPieceId() ?? null;
-        if (pieceId === null) return;
-        // 回した先は別の場所なので、走っているスナップの補間は打ち切る
-        snapMotion.cancel(pieceId);
-        game.rotate(pieceId, axis, dir);
-      },
-      onDepth: (dir): void => {
-        input?.moveDepth(dir);
-      },
       onReset: (): void => {
         // 同じ seed の散らし配置に戻す（SPEC.md 3.3「やり直し」）
         exitRotateMode();
