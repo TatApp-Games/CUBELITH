@@ -251,21 +251,72 @@ export function solutionPlacements(n: number, m: number, seed: number): Placemen
   return generatePuzzle(n, m, seed).solution.slice();
 }
 
-/** 1 回分の散らし。重なりが出たらその場でリトライし、詰まったら範囲を広げる。 */
-function scatterOnce(pieces: readonly Piece[], n: number, rng: Rng): Placement[] {
+/** 散らしのオプション。既定は「向きはランダム・固定ピース無し」で、従来の 3 引数の呼び出しと同じ。 */
+export type ScatterOptions = {
+  /** 向きをランダムにするか。false なら全ピースを IDENTITY_ORIENTATION で置く。既定 true */
+  readonly allowRotation?: boolean;
+  /** 散らさずにそのまま残す配置（ヒントで固定したピース）。既定は空 */
+  readonly keep?: readonly Placement[];
+};
+
+/** keep をピース id 引きの表にする。未知の id / 重複した id は呼び出し側のバグなので例外。 */
+function buildKeepMap(
+  pieces: readonly Piece[],
+  keep: readonly Placement[] | undefined,
+): ReadonlyMap<number, Placement> {
+  const map = new Map<number, Placement>();
+  if (keep === undefined) return map;
+  const known = new Set(pieces.map((piece): number => piece.id));
+  for (const placement of keep) {
+    if (!known.has(placement.pieceId)) {
+      throw new Error(`散らし: keep に未知のピース id ${placement.pieceId}`);
+    }
+    if (map.has(placement.pieceId)) {
+      throw new Error(`散らし: keep のピース id ${placement.pieceId} が重複している`);
+    }
+    map.set(placement.pieceId, placement);
+  }
+  return map;
+}
+
+/**
+ * 1 回分の散らし。重なりが出たらその場でリトライし、詰まったら範囲を広げる。
+ * keepById にある配置はそのまま採用し、そのボクセルは先に占有として登録する。
+ */
+function scatterOnce(
+  pieces: readonly Piece[],
+  n: number,
+  rng: Rng,
+  allowRotation: boolean,
+  keepById: ReadonlyMap<number, Placement>,
+): Placement[] {
   const occupied = new Set<string>();
   const placements: Placement[] = [];
   // 立方体は [0, N-1]³ にあるので、その中心のまわり ±(N+2) を既定の散らし範囲にする
   const center = Math.floor((n - 1) / 2);
 
+  // 固定ピースのボクセルを先に占有として登録し、残りがそこへ重ならないようにする
   for (const piece of pieces) {
+    const kept = keepById.get(piece.id);
+    if (kept === undefined) continue;
+    for (const v of placedVoxels(piece, kept)) occupied.add(vec3Key(v));
+  }
+
+  for (const piece of pieces) {
+    const kept = keepById.get(piece.id);
+    if (kept !== undefined) {
+      // そのまま残す。乱数も消費しないので keep の内容が同じなら結果も同じ
+      placements.push(kept);
+      continue;
+    }
+
     let half = n + 2;
     let attempts = 0;
     for (;;) {
       const span = half * 2 + 1;
       const placement: Placement = {
         pieceId: piece.id,
-        orientation: rng.nextInt(ORIENTATION_COUNT),
+        orientation: allowRotation ? rng.nextInt(ORIENTATION_COUNT) : IDENTITY_ORIENTATION,
         position: vec3(
           center - half + rng.nextInt(span),
           center - half + rng.nextInt(span),
@@ -294,17 +345,33 @@ function scatterOnce(pieces: readonly Piece[], n: number, rng: Rng): Placement[]
  * 各ピースにランダムな向き（24 通り）と、立方体の周囲 ±(N+2) 程度のランダムな位置を与える。
  * ピース同士は重ならない。同じ引数なら常に同じ配置になる。
  *
+ * options で「向きを恒等に固定する（難易度: 回転なし）」「指定した配置は散らさず残す（ヒントで
+ * 固定したピース）」を指定できる。返り値は常に全ピース分で、並びは pieces の並びに揃う。
+ *
  * 解釈: 散らした直後にクリア判定が真になると開始と同時にクリアしてしまうので、真なら引き直す。
+ * ただし keep があるときは固定の進み具合によっては避けようが無いので、上限まで引き直しても
+ * 避けられなければ例外にせず最後の配置を返す。
  */
-export function scatterPlacements(pieces: readonly Piece[], n: number, seed: number): Placement[] {
+export function scatterPlacements(
+  pieces: readonly Piece[],
+  n: number,
+  seed: number,
+  options?: ScatterOptions,
+): Placement[] {
   assertSpaceSize(n);
   assertSeed(seed);
   if (pieces.length === 0) throw new RangeError('散らし: ピースが空');
 
+  const allowRotation = options?.allowRotation ?? true;
+  const keepById = buildKeepMap(pieces, options?.keep);
+
   const rng = createRng(seed);
+  let last: Placement[] | null = null;
   for (let retry = 0; retry < SCATTER_RETRY_LIMIT; retry++) {
-    const placements = scatterOnce(pieces, n, rng);
+    const placements = scatterOnce(pieces, n, rng, allowRotation, keepById);
     if (!isSolved(pieces, placements, n)) return placements;
+    last = placements;
   }
+  if (keepById.size > 0 && last !== null) return last;
   throw new Error('散らしに失敗: クリア状態でない配置を作れなかった');
 }

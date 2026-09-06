@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { addVec3, ORIENTATION_COUNT, vec3, vec3Key, type Vec3 } from '../src/core/grid';
+import {
+  addVec3,
+  IDENTITY_ORIENTATION,
+  ORIENTATION_COUNT,
+  vec3,
+  vec3Key,
+  type Vec3,
+} from '../src/core/grid';
 import { placedVoxels, type Piece, type Placement } from '../src/core/piece';
 import {
   generatePieces,
@@ -272,5 +279,123 @@ describe('scatterPlacements', () => {
     expect(() => scatterPlacements(pieces, 8, 1)).toThrow(RangeError);
     expect(() => scatterPlacements(pieces, 3, 0.5)).toThrow(RangeError);
     expect(() => scatterPlacements([], 3, 1)).toThrow(RangeError);
+  });
+});
+
+describe('scatterPlacements のオプション', () => {
+  const N = 4;
+  const M = 5;
+  const SEED = 20260906;
+
+  /** テスト用のパズル。pieces と solution を対で返す。 */
+  function puzzle(): { pieces: readonly Piece[]; solution: readonly Placement[] } {
+    const generated = generatePuzzle(N, M, SEED);
+    return { pieces: generated.pieces, solution: generated.solution };
+  }
+
+  /** 配置を id で引く。 */
+  function pick(placements: readonly Placement[], pieceId: number): Placement {
+    const found = placements.find((p): boolean => p.pieceId === pieceId);
+    if (found === undefined) throw new Error(`テスト: ピース ${pieceId} の配置が無い`);
+    return found;
+  }
+
+  it('省略時は従来どおり（3 引数の呼び出しと同じ結果）', () => {
+    const { pieces } = puzzle();
+    expect(scatterPlacements(pieces, N, SEED, {})).toEqual(scatterPlacements(pieces, N, SEED));
+    expect(scatterPlacements(pieces, N, SEED, { allowRotation: true })).toEqual(
+      scatterPlacements(pieces, N, SEED),
+    );
+  });
+
+  it('allowRotation: false なら全配置の向きが IDENTITY_ORIENTATION', () => {
+    for (const n of [3, 4, 5]) {
+      const pieces = generatePieces(n, 4, 777 + n);
+      const placements = scatterPlacements(pieces, n, 999, { allowRotation: false });
+      expect(placements).toHaveLength(pieces.length);
+      for (const placement of placements) {
+        expect(placement.orientation).toBe(IDENTITY_ORIENTATION);
+      }
+    }
+  });
+
+  it('allowRotation: false でもピース同士は重ならない', () => {
+    const pieces = generatePieces(4, 6, 4242);
+    const placements = scatterPlacements(pieces, 4, 4242, { allowRotation: false });
+    const world = worldVoxels(pieces, placements).map(vec3Key);
+    expect(new Set(world).size).toBe(world.length);
+  });
+
+  it('keep に渡した配置はそのまま返り、他のピースと重ならない', () => {
+    const { pieces, solution } = puzzle();
+    for (const keep of [[pick(solution, 0)], [pick(solution, 0), pick(solution, 2)]]) {
+      const placements = scatterPlacements(pieces, N, SEED, { keep });
+
+      // keep はそのまま含まれる
+      for (const kept of keep) {
+        expect(pick(placements, kept.pieceId)).toEqual(kept);
+      }
+
+      // 固定ピースのボクセルに他のピースが重ならない
+      const keptIds = new Set(keep.map((p): number => p.pieceId));
+      const keptKeys = new Set(
+        worldVoxels(pieces, keep).map(vec3Key),
+      );
+      const others = placements.filter((p): boolean => !keptIds.has(p.pieceId));
+      for (const key of worldVoxels(pieces, others).map(vec3Key)) {
+        expect(keptKeys.has(key)).toBe(false);
+      }
+    }
+  });
+
+  it('keep 込みでも全ピースがちょうど 1 回ずつ現れ、ボクセルの重複が無い', () => {
+    const { pieces, solution } = puzzle();
+    const placements = scatterPlacements(pieces, N, SEED, {
+      keep: [pick(solution, 1), pick(solution, 3)],
+    });
+
+    expect(placements).toHaveLength(pieces.length);
+    expect(placements.map((p): number => p.pieceId)).toEqual(pieces.map((p): number => p.id));
+
+    const world = worldVoxels(pieces, placements).map(vec3Key);
+    expect(new Set(world).size).toBe(world.length);
+  });
+
+  it('keep と allowRotation: false を同時に使える', () => {
+    const { pieces, solution } = puzzle();
+    const keep = [pick(solution, 0)];
+    const placements = scatterPlacements(pieces, N, SEED, { keep, allowRotation: false });
+    for (const placement of placements) {
+      expect(placement.orientation).toBe(IDENTITY_ORIENTATION);
+    }
+    expect(pick(placements, 0)).toEqual(pick(solution, 0));
+  });
+
+  it('同じ引数の 2 回の呼び出しは等しい（決定的）', () => {
+    const { pieces, solution } = puzzle();
+    const options = { keep: [pick(solution, 2)], allowRotation: false };
+    expect(scatterPlacements(pieces, N, SEED, options)).toEqual(
+      scatterPlacements(pieces, N, SEED, options),
+    );
+    const rotated = { keep: [pick(solution, 2)] };
+    expect(scatterPlacements(pieces, N, SEED, rotated)).toEqual(
+      scatterPlacements(pieces, N, SEED, rotated),
+    );
+  });
+
+  it('keep が全ピース分でも例外にならず、その配置がそのまま返る', () => {
+    const { pieces, solution } = puzzle();
+    // 解答そのものはクリア状態だが、keep があるときは引き直しの上限を超えても例外にしない
+    const placements = scatterPlacements(pieces, N, SEED, { keep: solution });
+    expect(placements).toEqual(solution.slice());
+  });
+
+  it('keep の未知 id / 重複 id は例外', () => {
+    const { pieces, solution } = puzzle();
+    const unknown: Placement = { pieceId: 999, orientation: 0, position: vec3(0, 0, 0) };
+    expect(() => scatterPlacements(pieces, N, SEED, { keep: [unknown] })).toThrow();
+    expect(() =>
+      scatterPlacements(pieces, N, SEED, { keep: [pick(solution, 0), pick(solution, 0)] }),
+    ).toThrow();
   });
 });

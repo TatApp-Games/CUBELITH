@@ -185,3 +185,42 @@ export function rotateOrientation(orientation: number, axis: Axis, dir: 1 | -1):
   const step = AXIS_ROTATION_ID[axis];
   return composeOrientation(orientation, dir === 1 ? step.plus : step.minus);
 }
+
+/**
+ * 任意の 3x3 実数行列に最も近い 90 度単位の向き id を返す。
+ *
+ * 24 個の向き行列との Frobenius 内積（対応する要素どうしの積の和）が最大のものを選ぶ。
+ * 回転行列どうしの内積は 1 + 2cosθ（θ は回転角の差）なので、これは「回転角の差が最小」と同じ。
+ * 同点なら id の小さい方を返し、結果を決定的にする。
+ *
+ * 用途: 回転モードでピースを連続的に回したあと、指を離した時点で最寄りの向きへスナップする。
+ * 呼び出し側は Three.js の Matrix4 / Quaternion から 3x3 を取り出して渡す想定なので、
+ * 引数は行優先の 9 要素の数値配列とし、three の型には依存しない。
+ */
+export function nearestOrientation(m: readonly number[]): number {
+  if (m.length !== 9) {
+    throw new RangeError(`nearestOrientation: 行優先の 9 要素が必要 (got ${m.length})`);
+  }
+  for (const value of m) {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      throw new RangeError(`nearestOrientation: 有限の数値でない要素がある (${String(value)})`);
+    }
+  }
+
+  let bestId = 0;
+  let bestScore = Number.NEGATIVE_INFINITY;
+  for (let id = 0; id < ORIENTATION_COUNT; id++) {
+    const candidate = ORIENTATION_MATRICES[id];
+    if (candidate === undefined) throw new Error(`向きの表に id ${id} が無い`);
+    let score = 0;
+    for (let i = 0; i < 9; i++) {
+      score += (m[i] ?? 0) * (candidate[i] ?? 0);
+    }
+    // 厳密な > なので同点は先に見た（＝ id の小さい）方が残る
+    if (score > bestScore) {
+      bestScore = score;
+      bestId = id;
+    }
+  }
+  return bestId;
+}
