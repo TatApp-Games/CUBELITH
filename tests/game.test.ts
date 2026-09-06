@@ -1,5 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
-import { equalsVec3, rotateOrientation, vec3, vec3Key, type Axis, type Vec3 } from '../src/core/grid';
+import {
+  addVec3,
+  equalsVec3,
+  rotateOrientation,
+  vec3,
+  vec3Key,
+  type Axis,
+  type Vec3,
+} from '../src/core/grid';
 import { placedVoxels, type Piece, type Placement } from '../src/core/piece';
 import { generatePuzzle, scatterPlacements } from '../src/core/generate';
 import {
@@ -7,6 +15,7 @@ import {
   movePlacement,
   replacePlacement,
   rotatePlacement,
+  type LockKind,
 } from '../src/core/game';
 import { isSolved } from '../src/core/solve';
 
@@ -263,5 +272,169 @@ describe('createGame', () => {
     expect(() =>
       game.reset([...solution.slice(1), placementOf(solution, 1)]),
     ).toThrow();
+  });
+});
+
+describe('Game の固定（ロック）と place', () => {
+  /** 散らした状態のゲームと、変更を数えるスパイ。 */
+  function scattered(): {
+    game: ReturnType<typeof createGame>;
+    onChange: ReturnType<typeof vi.fn>;
+    pieces: readonly Piece[];
+    solution: readonly Placement[];
+  } {
+    const { pieces, solution } = puzzle();
+    const initial = scatterPlacements(pieces, N, SEED);
+    const onChange = vi.fn();
+    const game = createGame(pieces, N, initial, onChange);
+    return { game, onChange, pieces, solution };
+  }
+
+  it('place は位置と向きを直接置く', () => {
+    const { game, onChange, solution } = scattered();
+    const answer = placementOf(solution, 1);
+    game.place(1, answer.orientation, answer.position);
+
+    const placed = game.placementOf(1);
+    expect(placed?.orientation).toBe(answer.orientation);
+    expect(placed && equalsVec3(placed.position, answer.position)).toBe(true);
+    expect(onChange).toHaveBeenCalledTimes(1);
+  });
+
+  it('lock / unlock は配置を変えないので onChange を呼ばない', () => {
+    const { game, onChange } = scattered();
+    game.lock(0, 'manual');
+    game.unlock(0);
+    expect(onChange).not.toHaveBeenCalled();
+    expect(game.lockKindOf(0)).toBeNull();
+  });
+
+  it('固定中は move / rotate / place が効かず onChange も呼ばれない', () => {
+    for (const kind of ['manual', 'hint'] satisfies LockKind[]) {
+      const { game, onChange, solution } = scattered();
+      const before = game.placementOf(0);
+      expect(before).toBeDefined();
+      if (before === undefined) return;
+
+      game.lock(0, kind);
+      onChange.mockClear();
+
+      game.move(0, vec3(1, 0, 0));
+      game.rotate(0, 'y', 1);
+      const answer = placementOf(solution, 0);
+      game.place(0, answer.orientation, answer.position);
+
+      const after = game.placementOf(0);
+      expect(after).toEqual(before);
+      expect(onChange).not.toHaveBeenCalled();
+      expect(game.lockKindOf(0)).toBe(kind);
+    }
+  });
+
+  it('固定していないピースは固定中のピースがあっても動かせる', () => {
+    const { game, onChange } = scattered();
+    game.lock(0, 'manual');
+    const before = game.placementOf(1);
+    game.move(1, vec3(2, 0, 0));
+    const after = game.placementOf(1);
+    expect(before && after && equalsVec3(after.position, addVec3(before.position, vec3(2, 0, 0)))).toBe(
+      true,
+    );
+    expect(onChange).toHaveBeenCalledTimes(1);
+  });
+
+  it("unlock 後は再び動かせる", () => {
+    const { game, onChange } = scattered();
+    game.lock(0, 'manual');
+    game.move(0, vec3(1, 0, 0));
+    expect(onChange).not.toHaveBeenCalled();
+
+    game.unlock(0);
+    const before = game.placementOf(0);
+    game.move(0, vec3(1, 0, 0));
+    const after = game.placementOf(0);
+    expect(before && after && equalsVec3(after.position, addVec3(before.position, vec3(1, 0, 0)))).toBe(
+      true,
+    );
+    expect(onChange).toHaveBeenCalledTimes(1);
+  });
+
+  it("'hint' の固定は unlock で解除されない", () => {
+    const { game } = scattered();
+    game.lock(2, 'hint');
+    game.unlock(2);
+    expect(game.lockKindOf(2)).toBe('hint');
+
+    const before = game.placementOf(2);
+    game.move(2, vec3(3, 0, 0));
+    expect(game.placementOf(2)).toEqual(before);
+  });
+
+  it("lock は同じピースの固定の種類を上書きできる", () => {
+    const { game } = scattered();
+    game.lock(1, 'manual');
+    expect(game.lockKindOf(1)).toBe('manual');
+    game.lock(1, 'hint');
+    expect(game.lockKindOf(1)).toBe('hint');
+    game.unlock(1);
+    expect(game.lockKindOf(1)).toBe('hint');
+  });
+
+  it('lockedIds() は固定中のピースをすべて含む（順序に依存しない）', () => {
+    const { game } = scattered();
+    expect(game.lockedIds()).toEqual([]);
+    game.lock(2, 'manual');
+    game.lock(0, 'hint');
+    expect(new Set(game.lockedIds())).toEqual(new Set([0, 2]));
+    expect(game.lockedIds()).toHaveLength(2);
+
+    game.unlock(2);
+    expect(new Set(game.lockedIds())).toEqual(new Set([0]));
+  });
+
+  it("reset は 'manual' を解除して 'hint' を残す", () => {
+    const { game, pieces } = scattered();
+    game.lock(0, 'manual');
+    game.lock(1, 'hint');
+    game.lock(2, 'manual');
+
+    game.reset(scatterPlacements(pieces, N, SEED + 1));
+
+    expect(game.lockKindOf(0)).toBeNull();
+    expect(game.lockKindOf(1)).toBe('hint');
+    expect(game.lockKindOf(2)).toBeNull();
+    expect(new Set(game.lockedIds())).toEqual(new Set([1]));
+
+    // 解除されたピースは動かせて、'hint' のピースは動かせないまま
+    const beforeHint = game.placementOf(1);
+    game.move(1, vec3(1, 0, 0));
+    expect(game.placementOf(1)).toEqual(beforeHint);
+
+    const beforeManual = game.placementOf(0);
+    game.move(0, vec3(1, 0, 0));
+    expect(game.placementOf(0)).not.toEqual(beforeManual);
+  });
+
+  it('未知のピース id は例外', () => {
+    const { game } = scattered();
+    expect(() => game.lock(99, 'manual')).toThrow();
+    expect(() => game.unlock(99)).toThrow();
+    expect(() => game.place(99, 0, vec3(0, 0, 0))).toThrow();
+    expect(game.lockKindOf(99)).toBeNull();
+  });
+
+  it('place の向き id が範囲外なら RangeError', () => {
+    const { game } = scattered();
+    expect(() => game.place(0, 24, vec3(0, 0, 0))).toThrow(RangeError);
+    expect(() => game.place(0, -1, vec3(0, 0, 0))).toThrow(RangeError);
+  });
+
+  it('ヒントで全ピースを解答位置へ置くとクリアになる', () => {
+    const { game, solution } = scattered();
+    for (const answer of solution) {
+      game.place(answer.pieceId, answer.orientation, answer.position);
+      game.lock(answer.pieceId, 'hint');
+    }
+    expect(game.solved()).toBe(true);
   });
 });

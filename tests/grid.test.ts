@@ -5,6 +5,7 @@ import {
   composeOrientation,
   equalsVec3,
   IDENTITY_ORIENTATION,
+  nearestOrientation,
   ORIENTATION_COUNT,
   orientationMatrix,
   rotateOrientation,
@@ -16,6 +17,7 @@ import {
   type Mat3,
   type Vec3,
 } from '../src/core/grid';
+import { createRng } from '../src/core/rng';
 
 const ALL_ORIENTATIONS: readonly number[] = Array.from({ length: ORIENTATION_COUNT }, (_, i) => i);
 const AXES: readonly Axis[] = ['x', 'y', 'z'];
@@ -250,5 +252,62 @@ describe('rotateOrientation', () => {
       }
     }
     expect(reached.size).toBe(ORIENTATION_COUNT);
+  });
+});
+
+describe('nearestOrientation', () => {
+  /** Y 軸まわりに degrees 度回した行列（行優先）。ROTATION_Y と同じ向きの回転。 */
+  function rotationY(degrees: number): number[] {
+    const rad = (degrees * Math.PI) / 180;
+    const c = Math.cos(rad);
+    const s = Math.sin(rad);
+    return [c, 0, s, 0, 1, 0, -s, 0, c];
+  }
+
+  it('24 通りの向き行列そのものを渡すと同じ id が返る', () => {
+    for (const id of ALL_ORIENTATIONS) {
+      expect(nearestOrientation([...orientationMatrix(id)])).toBe(id);
+    }
+  });
+
+  it('各要素に ±0.15 のノイズを載せても同じ id が返る', () => {
+    // 決定的な擬似乱数を使う（Math.random は使わない）
+    const rng = createRng(20260906);
+    for (const id of ALL_ORIENTATIONS) {
+      const base = orientationMatrix(id);
+      for (let trial = 0; trial < 20; trial++) {
+        const noisy = base.map((value): number => value + (rng.next() * 2 - 1) * 0.15);
+        expect(nearestOrientation(noisy)).toBe(id);
+      }
+    }
+  });
+
+  it('恒等を少しだけ回した行列は IDENTITY_ORIENTATION になる', () => {
+    expect(nearestOrientation(rotationY(20))).toBe(IDENTITY_ORIENTATION);
+    expect(nearestOrientation(rotationY(-20))).toBe(IDENTITY_ORIENTATION);
+    expect(nearestOrientation(rotationY(0))).toBe(IDENTITY_ORIENTATION);
+  });
+
+  it('90 度に近い回転はその 90 度の向きになる', () => {
+    const quarter = nearestOrientation(rotationY(90));
+    expect(nearestOrientation(rotationY(80))).toBe(quarter);
+    expect(nearestOrientation(rotationY(100))).toBe(quarter);
+    expect(quarter).not.toBe(IDENTITY_ORIENTATION);
+  });
+
+  it('同点なら id の小さい方を返す（零行列はすべて内積 0）', () => {
+    expect(nearestOrientation([0, 0, 0, 0, 0, 0, 0, 0, 0])).toBe(0);
+  });
+
+  it('要素数が 9 でなければ RangeError', () => {
+    expect(() => nearestOrientation([1, 0, 0, 0, 1, 0, 0, 0])).toThrow(RangeError);
+    expect(() => nearestOrientation([1, 0, 0, 0, 1, 0, 0, 0, 1, 0])).toThrow(RangeError);
+    expect(() => nearestOrientation([])).toThrow(RangeError);
+  });
+
+  it('有限でない値を含むと RangeError', () => {
+    expect(() => nearestOrientation([NaN, 0, 0, 0, 1, 0, 0, 0, 1])).toThrow(RangeError);
+    expect(() => nearestOrientation([1, 0, 0, 0, Infinity, 0, 0, 0, 1])).toThrow(RangeError);
+    expect(() => nearestOrientation([1, 0, 0, 0, 1, 0, 0, 0, -Infinity])).toThrow(RangeError);
   });
 });
