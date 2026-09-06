@@ -4,6 +4,7 @@
 // レンダラ・カメラ・SE はアプリ全体で 1 つを使い回し、パズルごとに作り直すもの（ピースの
 // InstancedMesh・枠・ゲーム状態・入力・スナップ）だけをセッションとしてまとめて破棄する。
 
+import * as THREE from 'three';
 import { createGame } from './core/game';
 import {
   generatePuzzle,
@@ -24,6 +25,7 @@ import { createOrbitCamera } from './render/camera';
 import { createClearEffect, type ClearEffect } from './render/clearEffect';
 import { createPieceViews, createSolutionFrame } from './render/pieces';
 import { preferLiteMode } from './render/quality';
+import { createRotationGizmo, type GizmoAxis } from './render/rotationGizmo';
 import { createRenderContext } from './render/scene';
 import { createSnapMotion } from './render/snapMotion';
 import { createClearScreen } from './ui/clearScreen';
@@ -88,6 +90,47 @@ function scatterRadius(
     }
   }
   return Math.sqrt(maxSquared) + 1;
+}
+
+/**
+ * 回転ギズモの輪をピースの外へ出すための余白（ボクセル）。ボクセル半分 + 少し。
+ * 最小半径はボクセル 1.5 個ぶん（1 ボクセルのピースでも指で輪を掴める大きさ）。
+ */
+const GIZMO_MARGIN = 0.9;
+const MIN_GIZMO_RADIUS = 1.5;
+
+/**
+ * 回転ギズモの中心（ワールド座標を center に書く）と半径を、ピースの配置後ボクセルから決める。
+ * 中心は重心（render/pieces.ts の自由回転の回転中心と同じ）なので、回しても中心は動かない。
+ * 半径は外接球 + 余白なので、どのピースでも輪がピースの外に出る（解釈: 指示書のとおり
+ * 画面上で一定の大きさにはせず、ピースの大きさに合わせる）。
+ */
+function measureGizmo(
+  piece: Piece,
+  placement: Placement,
+  n: number,
+  center: THREE.Vector3,
+): number {
+  const voxels = placedVoxels(piece, placement);
+  let sumX = 0;
+  let sumY = 0;
+  let sumZ = 0;
+  for (const voxel of voxels) {
+    sumX += voxel.x;
+    sumY += voxel.y;
+    sumZ += voxel.z;
+  }
+  const count = Math.max(voxels.length, 1);
+  center.set(sumX / count, sumY / count, sumZ / count);
+  let maxSquared = 0;
+  for (const voxel of voxels) {
+    const squared =
+      (voxel.x - center.x) ** 2 + (voxel.y - center.y) ** 2 + (voxel.z - center.z) ** 2;
+    if (squared > maxSquared) maxSquared = squared;
+  }
+  // ピースのルートは立方体 [0, n-1]³ の中心が原点に来るようずらしてある（render/pieces.ts）
+  center.addScalar(-(n - 1) / 2);
+  return Math.max(Math.sqrt(maxSquared) + GIZMO_MARGIN, MIN_GIZMO_RADIUS);
 }
 
 const container = document.getElementById('app');
@@ -167,6 +210,14 @@ function startSession(settings: Settings): void {
   /** 回転モードで表示だけをねじっているピース。ねじれたまま残さないよう必ずここで覚えておく。 */
   let freeRotated: number | null = null;
 
+  // 回転モード中だけ出す回転ギズモ（SPEC.md 3.3 の回転操作の見せ方）。
+  // 中身は 4 本の輪だけなので、セッション中は作りっぱなしにして表示だけを切り替える
+  const gizmo = createRotationGizmo();
+  context.scene.add(gizmo.object);
+  const gizmoCenter = new THREE.Vector3();
+  // ピース id から実体を引く（ギズモの大きさを測るのにボクセル形状が要る）
+  const pieceById = new Map(puzzle.pieces.map((piece): [number, Piece] => [piece.id, piece]));
+
   /** 表示だけの自由回転を解く（論理上の配置は触らない）。 */
   const clearFreeRotation = (): void => {
     if (freeRotated === null) return;
@@ -174,10 +225,36 @@ function startSession(settings: Settings): void {
     freeRotated = null;
   };
 
-  /** 回転モードを抜けて、HUD のラベルと表示のねじれを元へ戻す。 */
+  /** ギズモを消す（回転モードを抜ける / 選択が外れる / クリア / 破棄）。 */
+  const hideGizmo = (): void => {
+    gizmo.setActive(null);
+    gizmo.setVisible(false);
+  };
+
+  /**
+   * ギズモを選択中のピースに合わせて置き直す。回転モードでなければ消す。
+   * 回転モードに入ったときと、ピースが動いたとき（game の onChange）に呼ぶ。
+   */
+  const refreshGizmo = (): void => {
+    const pieceId = input?.rotateMode() === true ? input.selectedPieceId() : null;
+    const piece = pieceId === null ? undefined : pieceById.get(pieceId);
+    const placement = pieceId === null ? undefined : game.placementOf(pieceId);
+    if (piece === undefined || placement === undefined) {
+      hideGizmo();
+      return;
+    }
+    const radius = measureGizmo(piece, placement, n, gizmoCenter);
+    gizmo.place(gizmoCenter, radius);
+    gizmo.setVisible(true);
+    // 出した最初のフレームから外周の白い輪をカメラへ向けておく
+    gizmo.update(context.camera);
+  };
+
+  /** 回転モードを抜けて、HUD のラベルと表示のねじれ・ギズモを元へ戻す。 */
   const exitRotateMode = (): void => {
     input?.setRotateMode(false);
     clearFreeRotation();
+    hideGizmo();
     hud?.setRotateMode(false);
   };
 
@@ -258,6 +335,8 @@ function startSession(settings: Settings): void {
     const active = input?.selectedPieceId() ?? null;
     snap.refresh(active !== null && game.lockKindOf(active) !== null ? null : active);
     refreshHintEnabled();
+    // ピースが動けばギズモの中心も動く（回転モードでなければ消えたまま）
+    refreshGizmo();
     if (solved) showClear();
   });
 
@@ -270,9 +349,17 @@ function startSession(settings: Settings): void {
       game.placementOf(pieceId)?.position,
     // 固定中のピースは選べるが動かせない（ドラッグ・奥行き・2 本指回転・スナップを止める）
     isLocked: (pieceId): boolean => game.lockKindOf(pieceId) !== null,
+    // 回転モードの pointerdown で輪を拾う（ピース本体のピックより先に呼ばれる）
+    pickGizmo: (raycaster): GizmoAxis | null => gizmo.pick(raycaster),
+    gizmoCenter: (target): THREE.Vector3 | null =>
+      gizmo.isVisible() ? gizmo.center(target) : null,
+    onGizmoAxisChange: (axis): void => {
+      gizmo.setActive(axis);
+    },
     onSelectionChange: (pieceId): void => {
-      // 選択が変わると入力側が回転モードを解除する。表示のねじれもここで戻す
+      // 選択が変わると入力側が回転モードを解除する。表示のねじれとギズモもここで戻す
       clearFreeRotation();
+      hideGizmo();
       pieceViews.setHighlighted(pieceId);
       // setSelected は回転モードの表示も 'off' に戻す（Hud.setSelected の注記）
       hud?.setSelected(pieceId);
@@ -322,6 +409,8 @@ function startSession(settings: Settings): void {
   session = {
     update(delta, elapsed): void {
       snapMotion.update();
+      // 外周の白い輪は常にカメラを向く（表示中だけ働く）
+      gizmo.update(context.camera);
       // 内部発光コアの呼吸（SPEC.md 4 章）。ピースごとに位相がずれている
       pieceViews.updateGlow(elapsed);
       clearEffect?.update(delta);
@@ -330,6 +419,7 @@ function startSession(settings: Settings): void {
       finished = true;
       // 表示だけのねじれを解いてから捨てる（破棄の順で状態が残らないように）
       clearFreeRotation();
+      gizmo.dispose();
       input?.dispose();
       input = null;
       hud = null;
@@ -413,6 +503,8 @@ function startSession(settings: Settings): void {
         // 入れたかどうかは入力側が決める（選択が無い / 固定中なら入らない）
         input.setRotateMode(true);
         hud?.setRotateMode(input.rotateMode());
+        // 入れたときだけギズモが出る（入れなかったなら refreshGizmo が消したままにする）
+        refreshGizmo();
       },
       onHint: (): void => {
         const pieceId = pickHintPiece(game.placements(), puzzle.solution, game.lockedIds());

@@ -7,6 +7,10 @@
 // 90 度単位に縛らずに回して見せ（onFreeRotate）、指を離した時点で最寄りの向きへ確定させる
 // （onFreeRotateEnd）。確定の計算は input/freeRotation.ts、表示は render/pieces.ts が持つ。
 //
+// 回転モード中は回転ギズモ（render/rotationGizmo.ts）の輪も掴める。輪を掴んだドラッグは
+// その軸まわりだけの回転になり（X / Y / Z はワールド軸、外周の白い輪はカメラの視線方向）、
+// 輪の外を掴んだドラッグは従来どおりカメラ基底まわりのトラックボール回転になる。
+//
 // 2 本指の割り当て（解釈）: SPEC.md 3.3 は回転も奥行き移動も「2 本指スワイプ **または** UI ボタン」を
 // 認めている。両方を 2 本指に載せると区別できないので、**2 本指は回転（スワイプ / ひねり）と
 // ピンチズームに割り当て、奥行き移動は HUD の「奥へ / 手前へ」ボタンとホイールに寄せる**。
@@ -15,6 +19,7 @@
 import * as THREE from 'three';
 import { addVec3, type Axis, type Vec3 } from '../core/grid';
 import type { OrbitCamera } from '../render/camera';
+import type { GizmoAxis } from '../render/rotationGizmo';
 import { axisStepVector, dragAxes, type DragAxes } from './axisMapping';
 import { pickSampleOffsets } from './pickSamples';
 import { createTwoFingerGesture, type Point } from './twoFingerGesture';
@@ -37,6 +42,15 @@ const WHEEL_PIXELS_PER_STEP = 60;
  * 無理なく越えられ、かつ指の震えでスナップ先が変わらない程度に鈍い。
  */
 const ROTATE_DEGREES_PER_PIXEL = 0.4;
+
+/**
+ * 掴んだ輪の角度を「平面への射影」で測れるかの境目（レイと輪の軸の内積の絶対値）。
+ *
+ * 輪をほぼ真横から見ている（＝画面上で線に潰れている）ときはレイが輪の平面とほぼ平行で、
+ * 交点が遠くへ飛んで角度が暴れる。そのときだけ「接線方向へのドラッグ量 × 感度」に切り替える
+ * （指示書が認めている簡易版）。0.25 は輪の面が視線から 75 度ほど傾いたあたり。
+ */
+const GIZMO_PLANE_MIN_DOT = 0.25;
 
 /**
  * 近接ピックの許容半径（CSS ピクセル）。中心のレイが外れたときだけ、この半径内へずらしたレイを撃つ。
@@ -94,6 +108,19 @@ export type PieceInputOptions = {
    * このときは onRelease（移動のマグネットスナップ）を呼ばない。
    */
   readonly onFreeRotateEnd?: (pieceId: number, quaternion: THREE.Quaternion) => void;
+  /**
+   * 回転モードの pointerdown で回転ギズモの輪を拾う（render/rotationGizmo.ts の pick）。
+   * 掴めなければ null。ピース本体のピックより先に呼ぶので、輪がピースの外にはみ出していても
+   * 掴んだ瞬間に選択が外れない。
+   */
+  readonly pickGizmo?: (raycaster: THREE.Raycaster) => GizmoAxis | null;
+  /**
+   * 回転ギズモの輪の中心（ワールド座標）を target に書いて返す。掴んだ輪まわりの角度計算に使う。
+   * 返せないときは null（その場合はトラックボール回転にフォールバックする）。
+   */
+  readonly gizmoCenter?: (target: THREE.Vector3) => THREE.Vector3 | null;
+  /** 掴んでいる輪が変わったとき（離したら null）。ギズモの強調表示に使う。 */
+  readonly onGizmoAxisChange?: (axis: GizmoAxis | null) => void;
 };
 
 export type PieceInput = {
@@ -141,9 +168,38 @@ type RotateDrag = {
   readonly startY: number;
   readonly base: THREE.Quaternion;
   readonly current: THREE.Quaternion;
+  /** 輪を掴んでいるときだけ入る軸拘束の情報。null ならトラックボール回転。 */
+  readonly gizmo: GizmoDrag | null;
+};
+
+/** 回転ギズモの輪を掴んでいるドラッグ 1 本分。掴んだ時点で軸と測り方を固定する。 */
+type GizmoDrag = {
+  readonly axis: GizmoAxis;
+  /** 回転軸（ワールド座標・正規化済み）。'view' はカメラの視線方向。 */
+  readonly vector: THREE.Vector3;
+  /** 輪の中心（ワールド座標）。 */
+  readonly center: THREE.Vector3;
+  /** 角度の測り方。'plane' = 輪の平面へ射影、'tangent' = 接線方向へのドラッグ量。 */
+  readonly mode: 'plane' | 'tangent';
+  /** 輪の平面の基底（mode = 'plane'）。u × v = vector の右手系なので角度の向きも軸に揃う。 */
+  readonly u: THREE.Vector3;
+  readonly v: THREE.Vector3;
+  /** 画面上の接線方向（mode = 'tangent'。y は上向き・単位ベクトル）。 */
+  readonly tangentX: number;
+  readonly tangentY: number;
+  /** 直前に測った角度（mode = 'plane'）。 */
+  lastAngle: number;
+  /** 掴んでからの累積回転角（ラジアン）。輪を何周回しても足し込まれる。 */
+  total: number;
 };
 
 type DragState = MoveDrag | RotateDrag;
+
+/** 角度差を (-π, π] に畳む。輪を何周回しても累積が飛ばないようにする。 */
+function wrapAngle(angle: number): number {
+  const wrapped = (angle + Math.PI) % (Math.PI * 2);
+  return (wrapped < 0 ? wrapped + Math.PI * 2 : wrapped) - Math.PI;
+}
 
 
 /** ホイールの delta を px 相当に正規化する（行 / ページ単位のブラウザ対策）。 */
@@ -178,6 +234,11 @@ export function createPieceInput(options: PieceInputOptions): PieceInput {
   // 回転の増分を組み立てる一時オブジェクト。ドラッグ中は毎フレーム通るので使い回す
   const yawStep = new THREE.Quaternion();
   const pitchStep = new THREE.Quaternion();
+  // 輪を掴んだ回転（軸拘束）の一時オブジェクト。こちらも毎フレーム通る
+  const axisStep = new THREE.Quaternion();
+  const ringPlane = new THREE.Plane();
+  const ringPoint = new THREE.Vector3();
+  const projected = new THREE.Vector3();
 
   /** 固定中なら true。isLocked を渡さなければ常に false（固定の概念が無い呼び出し側）。 */
   const isLocked = (pieceId: number): boolean => options.isLocked?.(pieceId) ?? false;
@@ -243,6 +304,20 @@ export function createPieceInput(options: PieceInputOptions): PieceInput {
   };
 
   /**
+   * 画面座標から raycaster にレイを張る。キャンバスの大きさが 0 なら false（張れない）。
+   * ギズモのピックと、輪の平面へポインタを射影するのに使う。
+   */
+  const setRayFrom = (clientX: number, clientY: number): boolean => {
+    const rect = domElement.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return false;
+    camera.updateMatrixWorld();
+    ndc.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+    ndc.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+    raycaster.setFromCamera(ndc, camera);
+    return true;
+  };
+
+  /**
    * 画面座標のピースを拾う。何も無ければ null。
    *
    * 中心のレイが当たればそれを採用し、外れたときだけ近接サンプル（pickSampleOffsets）を撃つ。
@@ -293,6 +368,8 @@ export function createPieceInput(options: PieceInputOptions): PieceInput {
     if (drag === null || drag.kind !== 'rotate') return;
     const finished = drag;
     drag = null;
+    // 掴んでいた輪の強調を先に解く（確定でピースが描き直される前に戻す）
+    if (finished.gizmo !== null) options.onGizmoAxisChange?.(null);
     options.onFreeRotateEnd?.(finished.pieceId, finished.current);
   };
 
@@ -348,13 +425,129 @@ export function createPieceInput(options: PieceInputOptions): PieceInput {
   };
 
   /**
-   * 回転モードのドラッグ量から、カメラ基底まわりのトラックボール回転を作って current に入れる。
+   * 掴んだ輪から軸拘束の状態を作る。中心が取れない / レイを張れないときは null を返し、
+   * 呼び出し側はトラックボール回転へフォールバックする。
    *
-   * 向きの割り当ては 2 本指の 90 度回転（applyTwoFinger）と同じ「見たまま回る」考え方:
-   * 右へドラッグ → カメラの上ベクトルまわりに +、上へドラッグ → カメラの右ベクトルまわりに −。
-   * 毎回 base から作り直すので、ドラッグを往復させても誤差が溜まらない。
+   * 角度の測り方はここで 1 回だけ決める。ドラッグ中はカメラが止まっている
+   * （選択中は orbit.enabled = false）ので、途中で測り方が変わることはない。
+   */
+  const beginGizmoDrag = (axis: GizmoAxis, clientX: number, clientY: number): GizmoDrag | null => {
+    const center = options.gizmoCenter?.(new THREE.Vector3());
+    if (!center) return null;
+    if (!setRayFrom(clientX, clientY)) return null;
+    const vector = new THREE.Vector3();
+    if (axis === 'x') vector.set(1, 0, 0);
+    else if (axis === 'y') vector.set(0, 1, 0);
+    else if (axis === 'z') vector.set(0, 0, 1);
+    // 外周の白い輪は視線方向の軸。カメラは自身の -Z を向く
+    else vector.setFromMatrixColumn(camera.matrixWorld, 2).negate().normalize();
+
+    const u = new THREE.Vector3();
+    const v = new THREE.Vector3();
+    if (Math.abs(raycaster.ray.direction.dot(vector)) >= GIZMO_PLANE_MIN_DOT) {
+      // 輪の平面が十分こちらを向いている。掴んだ点をそのまま追いかけられる
+      // 軸と平行でない適当なベクトルから、右手系の基底 (u, v, vector) を作る
+      u.set(Math.abs(vector.x) < 0.9 ? 1 : 0, Math.abs(vector.x) < 0.9 ? 0 : 1, 0)
+        .cross(vector)
+        .normalize();
+      v.copy(vector).cross(u);
+      const gizmo: GizmoDrag = {
+        axis,
+        vector,
+        center,
+        mode: 'plane',
+        u,
+        v,
+        tangentX: 0,
+        tangentY: 0,
+        lastAngle: 0,
+        total: 0,
+      };
+      // 掴んだ点の角度を基準にする（ここからの差分だけを積む）
+      const angle = ringAngle(gizmo, clientX, clientY);
+      if (angle !== null) gizmo.lastAngle = angle;
+      return gizmo;
+    }
+
+    // 輪が線に潰れて見えている。画面上での「輪の接線方向」へのドラッグ量を角度にする。
+    // 接線は軸の画面上の向きに直交する側（軸が画面の上を向いていれば、右へのドラッグで回る）
+    const rect = domElement.getBoundingClientRect();
+    projected.copy(center).project(camera);
+    const baseX = projected.x * rect.width;
+    const baseY = projected.y * rect.height;
+    projected.copy(center).add(vector).project(camera);
+    let dirX = projected.x * rect.width - baseX;
+    let dirY = projected.y * rect.height - baseY;
+    const length = Math.hypot(dirX, dirY);
+    // 軸が真正面を向いていればここには来ないが、念のため（縮退時は横方向へ倒す）
+    if (length < 1e-6) {
+      dirX = 0;
+      dirY = 1;
+    } else {
+      dirX /= length;
+      dirY /= length;
+    }
+    return {
+      axis,
+      vector,
+      center,
+      mode: 'tangent',
+      u,
+      v,
+      tangentX: dirY,
+      tangentY: -dirX,
+      lastAngle: 0,
+      total: 0,
+    };
+  };
+
+  /**
+   * 掴んだ輪の平面へポインタを射影して、中心まわりの角度（ラジアン）を測る。
+   * レイが平面と交わらなければ null。
+   */
+  const ringAngle = (gizmo: GizmoDrag, clientX: number, clientY: number): number | null => {
+    if (!setRayFrom(clientX, clientY)) return null;
+    ringPlane.setFromNormalAndCoplanarPoint(gizmo.vector, gizmo.center);
+    if (raycaster.ray.intersectPlane(ringPlane, ringPoint) === null) return null;
+    ringPoint.sub(gizmo.center);
+    return Math.atan2(ringPoint.dot(gizmo.v), ringPoint.dot(gizmo.u));
+  };
+
+  /** 輪を掴んでいるドラッグの累積回転角を更新する。 */
+  const updateGizmoDrag = (state: RotateDrag, gizmo: GizmoDrag, x: number, y: number): void => {
+    if (gizmo.mode === 'tangent') {
+      // 画面の y は下向きなので、上へのドラッグを +y に直してから接線へ射影する
+      const dx = x - state.startX;
+      const dy = -(y - state.startY);
+      gizmo.total =
+        (dx * gizmo.tangentX + dy * gizmo.tangentY) *
+        THREE.MathUtils.degToRad(ROTATE_DEGREES_PER_PIXEL);
+      return;
+    }
+    const angle = ringAngle(gizmo, x, y);
+    if (angle === null) return;
+    // 1 周をまたいでも連続になるよう、差分を畳んでから積む
+    gizmo.total += wrapAngle(angle - gizmo.lastAngle);
+    gizmo.lastAngle = angle;
+  };
+
+  /**
+   * 回転モードのドラッグ量から回転を作って current に入れる。
+   * 輪を掴んでいればその軸まわりだけ、掴んでいなければカメラ基底まわりのトラックボール回転。
+   *
+   * トラックボールの向きの割り当ては 2 本指の 90 度回転（applyTwoFinger）と同じ
+   * 「見たまま回る」考え方: 右へドラッグ → カメラの上ベクトルまわりに +、
+   * 上へドラッグ → カメラの右ベクトルまわりに −。
+   * どちらも毎回 base から作り直すので、ドラッグを往復させても誤差が溜まらない。
    */
   const updateRotateDrag = (state: RotateDrag, clientX: number, clientY: number): void => {
+    if (state.gizmo !== null) {
+      // 輪を掴んでいる間はその軸まわりだけ。ワールド軸まわりの回転なので左から重ねる
+      updateGizmoDrag(state, state.gizmo, clientX, clientY);
+      axisStep.setFromAxisAngle(state.gizmo.vector, state.gizmo.total);
+      state.current.copy(axisStep).multiply(state.base);
+      return;
+    }
     const dx = clientX - state.startX;
     const dy = clientY - state.startY;
     camera.updateMatrixWorld();
@@ -386,6 +579,32 @@ export function createPieceInput(options: PieceInputOptions): PieceInput {
       return;
     }
 
+    // 回転モード中はギズモの輪を先に拾う。輪はピースの外へはみ出しているので、
+    // ピースのピックを先にすると「輪を掴んだのに選択が外れる」ことになる
+    if (rotateModeOn && selected !== null && !isLocked(selected)) {
+      const axis =
+        options.pickGizmo !== undefined && setRayFrom(event.clientX, event.clientY)
+          ? options.pickGizmo(raycaster)
+          : null;
+      if (axis !== null) {
+        // 中心が取れなければ gizmo は null（＝トラックボール回転にフォールバックする）
+        const gizmo = beginGizmoDrag(axis, event.clientX, event.clientY);
+        drag = {
+          kind: 'rotate',
+          pointerId: event.pointerId,
+          pieceId: selected,
+          startX: event.clientX,
+          startY: event.clientY,
+          base: new THREE.Quaternion(),
+          current: new THREE.Quaternion(),
+          gizmo,
+        };
+        if (gizmo !== null) options.onGizmoAxisChange?.(axis);
+        domElement.setPointerCapture(event.pointerId);
+        return;
+      }
+    }
+
     const pieceId = pickPiece(event.clientX, event.clientY, event.pointerType);
     if (pieceId === null) {
       // 何も無い場所 → 選択解除。カメラ旋回はこのあと bubble 段の OrbitCamera が受け取る
@@ -397,7 +616,7 @@ export function createPieceInput(options: PieceInputOptions): PieceInput {
     if (isLocked(pieceId)) return;
     if (rotateModeOn) {
       // 回転モード（別のピースを掴んだなら setSelected が解除しているのでここには来ない）。
-      // ギズモはまだ無いので、ドラッグ全体をトラックボール回転として扱う（次タスク 00000003_006）
+      // ギズモの輪の外を掴んだので、ドラッグ全体をトラックボール回転として扱う
       drag = {
         kind: 'rotate',
         pointerId: event.pointerId,
@@ -407,6 +626,7 @@ export function createPieceInput(options: PieceInputOptions): PieceInput {
         // 直前のドラッグは指を離した時点で確定済みなので、姿勢は毎回そこから始まる
         base: new THREE.Quaternion(),
         current: new THREE.Quaternion(),
+        gizmo: null,
       };
       domElement.setPointerCapture(event.pointerId);
       return;
