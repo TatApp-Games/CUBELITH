@@ -7,6 +7,12 @@ import { MAX_SPACE_SIZE, MIN_PIECE_COUNT, MIN_SPACE_SIZE, maxPieces } from '../c
 export const DEFAULT_SPACE_SIZE = 3;
 export const DEFAULT_PIECE_COUNT = 4;
 
+/**
+ * パズルの回転（要望による難易度の追加項目）の既定。
+ * 既定は「なし」= ピースの向きを一切変えない遊び方（散らしの向きが恒等で、回転操作の UI も出ない）。
+ */
+export const DEFAULT_ALLOW_ROTATION = false;
+
 /** M のプリセットの段数（SPEC.md 3.1「UI では 4〜6 段階のプリセットでよい」）。 */
 const PRESET_STEPS = 5;
 

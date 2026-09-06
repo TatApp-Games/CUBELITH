@@ -29,7 +29,12 @@ import { createRotationGizmo, type GizmoAxis } from './render/rotationGizmo';
 import { createRenderContext } from './render/scene';
 import { createSnapMotion } from './render/snapMotion';
 import { createClearScreen } from './ui/clearScreen';
-import { DEFAULT_PIECE_COUNT, DEFAULT_SPACE_SIZE, randomSeed } from './ui/difficulty';
+import {
+  DEFAULT_ALLOW_ROTATION,
+  DEFAULT_PIECE_COUNT,
+  DEFAULT_SPACE_SIZE,
+  randomSeed,
+} from './ui/difficulty';
 import { createFpsMeter, type FpsMeter } from './ui/fpsMeter';
 import { createHud, type Hud } from './ui/hud';
 import { clampInt, readAppParams, withSettings } from './ui/params';
@@ -38,8 +43,20 @@ import { createScreenManager } from './ui/screens';
 import { createTitleScreen } from './ui/titleScreen';
 import type { Screen } from './ui/screens';
 
-/** パズル 1 回分の条件（SPEC.md 3.1）。 */
-type Settings = { readonly n: number; readonly m: number; readonly seed: number };
+/**
+ * パズル 1 回分の条件（SPEC.md 3.1 の N / M / シード + 要望による「パズルの回転」）。
+ *
+ * 解釈: 回転の有無は URL クエリに足さない（要望に指定が無く、CLAUDE.md 開発ルール 6
+ * 「仕様に無いことを足さない」に従う）。`?seed=` で盤面を再現しても、回転の有無は
+ * そのときタイトルで選んだものになる。
+ */
+type Settings = {
+  readonly n: number;
+  readonly m: number;
+  readonly seed: number;
+  /** true なら従来どおり向きランダムで散らし、回転操作も使える。false なら向きは恒等のまま。 */
+  readonly allowRotation: boolean;
+};
 
 /** パズル 1 回分。作り直しのたびに dispose して GPU 資源とリスナを手放す。 */
 type Session = {
@@ -58,8 +75,9 @@ type Session = {
 function initialSettings(query: ReturnType<typeof readAppParams>): Settings {
   const n = clampInt(query.n, MIN_SPACE_SIZE, MAX_SPACE_SIZE) ?? DEFAULT_SPACE_SIZE;
   const m = clampInt(query.m, MIN_PIECE_COUNT, maxPieces(n)) ?? DEFAULT_PIECE_COUNT;
-  // シードは SPEC.md 3.1 のとおり ?seed= で指定できる。無ければ毎回引き直す
-  return { n, m, seed: query.seed ?? randomSeed() };
+  // シードは SPEC.md 3.1 のとおり ?seed= で指定できる。無ければ毎回引き直す。
+  // 回転の有無はクエリに無いので既定（なし）から始める
+  return { n, m, seed: query.seed ?? randomSeed(), allowRotation: DEFAULT_ALLOW_ROTATION };
 }
 
 /**
@@ -174,8 +192,9 @@ function showTitle(settings: Settings): void {
       n: settings.n,
       m: settings.m,
       seed: settings.seed,
-      onStart: (n, m, seed): void => {
-        startSession({ n, m, seed });
+      allowRotation: settings.allowRotation,
+      onStart: (selection): void => {
+        startSession(selection);
       },
     }),
   );
@@ -184,10 +203,11 @@ function showTitle(settings: Settings): void {
 /** 生成 → 散らし → プレイ（SPEC.md 2 章 2 / 3）。 */
 function startSession(settings: Settings): void {
   disposeSession();
-  const { n, m, seed } = settings;
+  const { n, m, seed, allowRotation } = settings;
 
   const puzzle = generatePuzzle(n, m, seed);
-  const initial = scatterPlacements(puzzle.pieces, n, seed);
+  // 回転なしでは全ピースを恒等の向きで散らす（平行移動だけで解答配置に到達できる）
+  const initial = scatterPlacements(puzzle.pieces, n, seed, { allowRotation });
   const total = puzzle.pieces.length;
 
   syncLocation(settings);
@@ -236,7 +256,9 @@ function startSession(settings: Settings): void {
    * 回転モードに入ったときと、ピースが動いたとき（game の onChange）に呼ぶ。
    */
   const refreshGizmo = (): void => {
-    const pieceId = input?.rotateMode() === true ? input.selectedPieceId() : null;
+    // 回転なしでは回転モードに入らないのでギズモも出さない（念のための明示）
+    const pieceId =
+      allowRotation && input?.rotateMode() === true ? input.selectedPieceId() : null;
     const piece = pieceId === null ? undefined : pieceById.get(pieceId);
     const placement = pieceId === null ? undefined : game.placementOf(pieceId);
     if (piece === undefined || placement === undefined) {
@@ -318,10 +340,10 @@ function startSession(settings: Settings): void {
         seed,
         // 「もう一度」は同じ条件で再生成し、シードだけ引き直す（SPEC.md 2 章 5）
         onRetry: (): void => {
-          startSession({ n, m, seed: randomSeed() });
+          startSession({ n, m, seed: randomSeed(), allowRotation });
         },
         onBackToTitle: (): void => {
-          showTitle({ n, m, seed: randomSeed() });
+          showTitle({ n, m, seed: randomSeed(), allowRotation });
         },
       }),
     );
@@ -345,6 +367,7 @@ function startSession(settings: Settings): void {
     camera: context.camera,
     root: pieceViews.object,
     orbit,
+    allowRotation,
     gridPositionOf: (pieceId): Placement['position'] | undefined =>
       game.placementOf(pieceId)?.position,
     // 固定中のピースは選べるが動かせない（ドラッグ・奥行き・2 本指回転・スナップを止める）
@@ -457,7 +480,7 @@ function startSession(settings: Settings): void {
         const keep = game
           .placements()
           .filter((placement): boolean => game.lockKindOf(placement.pieceId) === 'hint');
-        game.reset(scatterPlacements(puzzle.pieces, n, seed, { keep }));
+        game.reset(scatterPlacements(puzzle.pieces, n, seed, { allowRotation, keep }));
         // reset は手動固定を解く（ヒントの固定は残る）。アイコンも実際の状態へ揃え直す
         for (const piece of puzzle.pieces) {
           pieceViews.setLockIcon(piece.id, game.lockKindOf(piece.id));
@@ -465,11 +488,11 @@ function startSession(settings: Settings): void {
         refreshHintEnabled();
       },
       onBackToTitle: (): void => {
-        showTitle({ n, m, seed: randomSeed() });
+        showTitle({ n, m, seed: randomSeed(), allowRotation });
       },
       onNext: (): void => {
         // 難易度はそのままシードだけ引き直す（クリア画面の「もう一度」と同じ扱い）
-        startSession({ n, m, seed: randomSeed() });
+        startSession({ n, m, seed: randomSeed(), allowRotation });
       },
       onToggleLock: (): void => {
         const pieceId = input?.selectedPieceId() ?? null;
@@ -528,7 +551,7 @@ function startSession(settings: Settings): void {
         );
         refreshHintEnabled();
       },
-    }),
+    }, { allowRotation }),
   );
 
   pieceViews.updatePlacements(game.placements());

@@ -5,6 +5,15 @@ import { nearestPreset, piecePresets, spaceSizes } from './difficulty';
 import type { Screen } from './screens';
 import { createButton, createOptionGroup, setSelected } from './widgets';
 
+/** 「開始」で確定する条件。難易度（N / M / パズルの回転）とシードをまとめて渡す。 */
+export type TitleSelection = {
+  readonly n: number;
+  readonly m: number;
+  readonly seed: number;
+  /** パズルの回転「あり」なら true。false なら向きは恒等のまま（回転操作の UI も出ない）。 */
+  readonly allowRotation: boolean;
+};
+
 export type TitleScreenOptions = {
   /** 初期選択の N。 */
   readonly n: number;
@@ -12,8 +21,10 @@ export type TitleScreenOptions = {
   readonly m: number;
   /** 表示するシード。「開始」でそのまま渡す。 */
   readonly seed: number;
+  /** 初期選択の「パズルの回転」（既定は difficulty.ts の DEFAULT_ALLOW_ROTATION = なし）。 */
+  readonly allowRotation: boolean;
   /** 「開始」が押されたとき。 */
-  readonly onStart: (n: number, m: number, seed: number) => void;
+  readonly onStart: (selection: TitleSelection) => void;
 };
 
 /** container（既定は #ui）にタイトル画面を作る。 */
@@ -36,22 +47,24 @@ export function createTitleScreen(
 
   const lead = document.createElement('p');
   lead.className = 'screen-lead';
-  lead.textContent = '空間サイズと分割数を選んで開始する';
+  lead.textContent = '空間サイズ・分割数・パズルの回転を選んで開始する';
   panel.appendChild(lead);
 
   let spaceSize = options.n;
   let pieceCount = options.m;
+  let allowRotation = options.allowRotation;
 
   const sizeGroup = createOptionGroup('空間サイズ N');
   const pieceGroup = createOptionGroup('分割数 M');
-  panel.append(sizeGroup.element, pieceGroup.element);
+  const rotationGroup = createOptionGroup('パズルの回転');
+  panel.append(sizeGroup.element, pieceGroup.element, rotationGroup.element);
 
   const summary = document.createElement('div');
   summary.className = 'screen-lead';
   panel.appendChild(summary);
 
   const startButton = createButton('開始', 'ui-button ui-button--primary ui-button--wide', (): void => {
-    options.onStart(spaceSize, pieceCount, options.seed);
+    options.onStart({ n: spaceSize, m: pieceCount, seed: options.seed, allowRotation });
   });
   panel.appendChild(startButton);
 
@@ -63,11 +76,14 @@ export function createTitleScreen(
   // 選択状態は class の付け替えだけで反映する（DOM とリスナを積み上げない）
   const sizeButtons = new Map<number, HTMLButtonElement>();
   const pieceButtons = new Map<number, HTMLButtonElement>();
+  const rotationButtons = new Map<boolean, HTMLButtonElement>();
 
   const syncSelection = (): void => {
     for (const [value, button] of sizeButtons) setSelected(button, value === spaceSize);
     for (const [value, button] of pieceButtons) setSelected(button, value === pieceCount);
-    summary.textContent = `N = ${spaceSize} / M = ${pieceCount}（${spaceSize ** 3} ボクセルを ${pieceCount} 個に分割）`;
+    for (const [value, button] of rotationButtons) setSelected(button, value === allowRotation);
+    const rotationLabel = allowRotation ? '回転あり' : '回転なし';
+    summary.textContent = `N = ${spaceSize} / M = ${pieceCount} / ${rotationLabel}（${spaceSize ** 3} ボクセルを ${pieceCount} 個に分割）`;
   };
 
   /** N が変わると M の有効範囲が変わるので、プリセットのボタンごと作り直す。 */
@@ -97,6 +113,15 @@ export function createTitleScreen(
     sizeGroup.row.appendChild(button);
   }
 
+  for (const value of [false, true]) {
+    const button = createButton(value ? 'あり' : 'なし', 'ui-button ui-button--option', (): void => {
+      allowRotation = value;
+      syncSelection();
+    });
+    rotationButtons.set(value, button);
+    rotationGroup.row.appendChild(button);
+  }
+
   rebuildPieceOptions();
   syncSelection();
 
@@ -108,6 +133,7 @@ export function createTitleScreen(
       root.remove();
       sizeButtons.clear();
       pieceButtons.clear();
+      rotationButtons.clear();
     },
   };
 }

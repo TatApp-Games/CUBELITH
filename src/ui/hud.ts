@@ -26,6 +26,16 @@ export type HudCallbacks = {
   readonly onHint: () => void;
 };
 
+/** HUD の作りに関わる設定（難易度で変わるもの）。 */
+export type HudOptions = {
+  /**
+   * パズルの回転が「あり」なら true。false のときは回転に関わるボタン
+   * （Pitch / Yaw / Roll の 6 個と「回転 / 回転解除」）を生成しない（disabled ではなく出さない）。
+   * 奥行き移動と固定 / 固定解除は回転と関係ないので残す。
+   */
+  readonly allowRotation: boolean;
+};
+
 /**
  * 選択中のピースの固定状態。
  * 'none' = 固定していない、'manual' = 人が固定した（解除できる）、'hint' = ヒントで固定した（解除できない）。
@@ -45,6 +55,7 @@ export type Hud = Screen & {
   /**
    * 回転モードの on / off を伝える。ボタンのラベル（回転 / 回転解除）と案内文が切り替わる。
    * 実際に入れたかは入力側（PieceInput.rotateMode）が決めるので、その結果を渡す。
+   * 回転なしの難易度では回転モードに入れないので、呼んでも何も起きない。
    */
   setRotateMode(enabled: boolean): void;
   /**
@@ -69,7 +80,12 @@ const ROTATE_BUTTONS: readonly {
 ];
 
 /** container（既定は #ui）に HUD を作る。 */
-export function createHud(container: HTMLElement, callbacks: HudCallbacks): Hud {
+export function createHud(
+  container: HTMLElement,
+  callbacks: HudCallbacks,
+  options: HudOptions,
+): Hud {
+  const { allowRotation } = options;
   const root = document.createElement('div');
   root.id = 'hud';
 
@@ -83,7 +99,7 @@ export function createHud(container: HTMLElement, callbacks: HudCallbacks): Hud 
   root.appendChild(status);
 
   // ピースに紐づく操作（90 度回転 6 個 + 奥行き 2 個 + 回転モード 1 個 + 固定 1 個）。
-  // 選択中のピースが無いときは行ごと隠す
+  // 選択中のピースが無いときは行ごと隠す。回転なしの難易度では回転に関わる分を作らない
   const pieceControls = document.createElement('div');
   pieceControls.id = 'hud-piece-controls';
 
@@ -91,16 +107,18 @@ export function createHud(container: HTMLElement, callbacks: HudCallbacks): Hud 
   // ボタンを見せないために disabled にする
   const movementButtons: HTMLButtonElement[] = [];
 
-  const rotateRow = document.createElement('div');
-  rotateRow.className = 'hud-row';
-  for (const spec of ROTATE_BUTTONS) {
-    const button = createButton(spec.label, 'ui-button', (): void => {
-      callbacks.onRotate(spec.axis, spec.dir);
-    });
-    movementButtons.push(button);
-    rotateRow.appendChild(button);
+  if (allowRotation) {
+    const rotateRow = document.createElement('div');
+    rotateRow.className = 'hud-row';
+    for (const spec of ROTATE_BUTTONS) {
+      const button = createButton(spec.label, 'ui-button', (): void => {
+        callbacks.onRotate(spec.axis, spec.dir);
+      });
+      movementButtons.push(button);
+      rotateRow.appendChild(button);
+    }
+    pieceControls.appendChild(rotateRow);
   }
-  pieceControls.appendChild(rotateRow);
 
   const moveRow = document.createElement('div');
   moveRow.className = 'hud-row';
@@ -111,14 +129,21 @@ export function createHud(container: HTMLElement, callbacks: HudCallbacks): Hud 
     callbacks.onDepth(-1);
   });
   movementButtons.push(depthFar, depthNear);
-  // 回転モードのトグル。オンの間はドラッグが連続回転になり、離すと最寄りの 90 度へスナップする
-  const rotateModeButton = createButton('回転', 'ui-button', callbacks.onToggleRotateMode);
-  rotateModeButton.id = 'hud-rotate-mode';
-  movementButtons.push(rotateModeButton);
+  // 回転モードのトグル。オンの間はドラッグが連続回転になり、離すと最寄りの 90 度へスナップする。
+  // 回転なしの難易度では作らない（null のまま）
+  const rotateModeButton = allowRotation
+    ? createButton('回転', 'ui-button', callbacks.onToggleRotateMode)
+    : null;
+  if (rotateModeButton !== null) {
+    rotateModeButton.id = 'hud-rotate-mode';
+    movementButtons.push(rotateModeButton);
+  }
   // 固定トグル。ラベルを状態で入れ替える（'none' → 固定 / それ以外 → 固定解除）
   const lockButton = createButton('固定', 'ui-button', callbacks.onToggleLock);
   lockButton.id = 'hud-lock';
-  moveRow.append(depthFar, depthNear, rotateModeButton, lockButton);
+  moveRow.append(depthFar, depthNear);
+  if (rotateModeButton !== null) moveRow.appendChild(rotateModeButton);
+  moveRow.appendChild(lockButton);
   pieceControls.appendChild(moveRow);
   root.appendChild(pieceControls);
 
@@ -160,8 +185,10 @@ export function createHud(container: HTMLElement, callbacks: HudCallbacks): Hud 
     for (const button of movementButtons) button.disabled = locked;
     // 固定中は回転モードに入れないので、ラベルも「回転」に戻しておく
     const rotating = rotateMode && !none && !locked;
-    rotateModeButton.textContent = rotating ? '回転解除' : '回転';
-    setSelectedStyle(rotateModeButton, rotating);
+    if (rotateModeButton !== null) {
+      rotateModeButton.textContent = rotating ? '回転解除' : '回転';
+      setSelectedStyle(rotateModeButton, rotating);
+    }
     lockButton.textContent = locked ? '固定解除' : '固定';
     // ヒントの金ロックは解除できない
     lockButton.disabled = lockState === 'hint';
@@ -174,7 +201,9 @@ export function createHud(container: HTMLElement, callbacks: HudCallbacks): Hud 
         ? `選択中: ピース #${selectedId}（固定中 — 動かすには「固定解除」を押す）`
         : rotating
           ? `選択中: ピース #${selectedId}（ドラッグで回転 / 離すと 90 度にスナップ）`
-          : `選択中: ピース #${selectedId}（ドラッグで移動 / 2 本指スワイプ・ひねりで回転 / ピンチでズーム）`;
+          : allowRotation
+            ? `選択中: ピース #${selectedId}（ドラッグで移動 / 2 本指スワイプ・ひねりで回転 / ピンチでズーム）`
+            : `選択中: ピース #${selectedId}（ドラッグで移動 / ピンチでズーム）`;
   };
 
   const setSelected = (pieceId: number | null): void => {
@@ -192,7 +221,8 @@ export function createHud(container: HTMLElement, callbacks: HudCallbacks): Hud 
   };
 
   const setRotateMode = (enabled: boolean): void => {
-    rotateMode = enabled;
+    // 回転なしの難易度では回転モード自体が無いので無視する
+    rotateMode = allowRotation && enabled;
     render();
   };
   render();
