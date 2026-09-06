@@ -42,7 +42,7 @@ export function createTitleScreen(
 
   const heading = document.createElement('h1');
   heading.className = 'screen-title';
-  heading.textContent = 'Crystal Assemble';
+  heading.textContent = 'GEODIA';
   panel.appendChild(heading);
 
   const lead = document.createElement('p');

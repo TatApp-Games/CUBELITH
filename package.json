@@ -1,9 +1,9 @@
 {
-  "name": "crystal-assemble-web",
+  "name": "geodia-web",
   "private": true,
   "version": "0.0.1",
   "type": "module",
-  "description": "Crystal Assemble (仮) の Web 版試作。仕様は SPEC.md",
+  "description": "GEODIA の Web 版試作。仕様は SPEC.md",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
