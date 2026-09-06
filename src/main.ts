@@ -304,6 +304,10 @@ function startSession(settings: Settings): void {
       onBackToTitle: (): void => {
         showTitle({ n, m, seed: randomSeed() });
       },
+      onNext: (): void => {
+        // 難易度はそのままシードだけ引き直す（クリア画面の「もう一度」と同じ扱い）
+        startSession({ n, m, seed: randomSeed() });
+      },
     }),
   );
 
