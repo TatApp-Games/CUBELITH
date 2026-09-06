@@ -20,6 +20,8 @@ export type HudCallbacks = {
   readonly onNext: () => void;
   /** 選択中のピースの固定 / 固定解除を切り替える。 */
   readonly onToggleLock: () => void;
+  /** ヒント（未固定のピース 1 つを正解位置へ送って金ロックで固定する）。 */
+  readonly onHint: () => void;
 };
 
 /**
@@ -38,6 +40,11 @@ export type Hud = Screen & {
    * setSelected で選択を変えたあとに呼ぶ。
    */
   setLock(kind: LockState): void;
+  /**
+   * ヒントボタンの有効 / 無効。未固定のピースが 1 個以下のときは false にする
+   * （最後の 1 ピースはヒントを使えない）。
+   */
+  setHintEnabled(enabled: boolean): void;
 };
 
 /** 回転ボタンの並び。ラベルは SPEC.md 6 章の Pitch± / Yaw± / Roll±。 */
@@ -109,10 +116,9 @@ export function createHud(container: HTMLElement, callbacks: HudCallbacks): Hud 
   footer.id = 'hud-footer';
   footer.className = 'hud-row';
 
-  // ヒント本体は後続タスクで実装する。そこでこのボタンの disabled を外す
-  const hintButton = createButton('ヒント', 'ui-button', (): void => {});
-  hintButton.disabled = true;
-  hintButton.title = '未実装';
+  // ヒント。使えるかどうかは盤面しだいなので、既定は無効にしておき setHintEnabled で切り替える
+  const hintButton = createButton('ヒント', 'ui-button', callbacks.onHint);
+  hintButton.id = 'hud-hint-button';
 
   // サウンドの on / off は未実装。ラベルだけ置いておく
   const soundButton = createButton('サウンド', 'ui-button', (): void => {});
@@ -141,7 +147,7 @@ export function createHud(container: HTMLElement, callbacks: HudCallbacks): Hud 
     const locked = lockState !== 'none';
     for (const button of movementButtons) button.disabled = locked;
     lockButton.textContent = locked ? '固定解除' : '固定';
-    // ヒントの金ロックは解除できない（次タスクで使う）
+    // ヒントの金ロックは解除できない
     lockButton.disabled = lockState === 'hint';
     lockButton.title = lockState === 'hint' ? 'ヒントで置いたピースは解除できない' : '';
     setSelectedStyle(lockButton, lockState === 'manual');
@@ -171,11 +177,18 @@ export function createHud(container: HTMLElement, callbacks: HudCallbacks): Hud 
   };
   setRemaining(0, 0);
 
+  const setHintEnabled = (enabled: boolean): void => {
+    hintButton.disabled = !enabled;
+    hintButton.title = enabled ? '' : '残り 1 ピースではヒントを使えない';
+  };
+  setHintEnabled(false);
+
   return {
     element: root,
     setSelected,
     setRemaining,
     setLock,
+    setHintEnabled,
     dispose(): void {
       root.remove();
     },
