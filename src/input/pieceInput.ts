@@ -76,6 +76,11 @@ export type PieceInputOptions = {
   readonly root: THREE.Object3D;
   /** 選択中はカメラを止めるために触る。 */
   readonly orbit: OrbitCamera;
+  /**
+   * パズルの回転が「あり」なら true（省略時は true）。false のときは 2 本指の 90 度回転を行わず、
+   * 回転モードにも入らない（setRotateMode(true) を無視する）。ピンチズームは残す。
+   */
+  readonly allowRotation?: boolean;
   /** ピースの現在のグリッド座標。ドラッグ感度の基準にする。 */
   readonly gridPositionOf: (pieceId: number) => Vec3 | undefined;
   /**
@@ -242,6 +247,7 @@ export function createPieceInput(options: PieceInputOptions): PieceInput {
 
   /** 固定中なら true。isLocked を渡さなければ常に false（固定の概念が無い呼び出し側）。 */
   const isLocked = (pieceId: number): boolean => options.isLocked?.(pieceId) ?? false;
+  const allowRotation = options.allowRotation ?? true;
   let wheelAccumulated = 0;
 
   /** 追跡中のポインタ（主ボタン / 指のみ）。 */
@@ -407,8 +413,8 @@ export function createPieceInput(options: PieceInputOptions): PieceInput {
       return;
     }
     // 回転モードでは 2 本指の 90 度回転を無効にする（回転はドラッグの連続回転へ一本化する）。
-    // ズーム（上の分岐）だけは回転モードでも効かせる
-    if (rotateModeOn) return;
+    // 回転なしの難易度でも 90 度回転は行わない。ズーム（上の分岐）だけはどちらでも効かせる
+    if (rotateModeOn || !allowRotation) return;
     const pieceId = selected;
     const onRotate = options.onRotate;
     // ズームは固定中でも効かせる。回るのは固定していないピースだけ
@@ -743,8 +749,9 @@ export function createPieceInput(options: PieceInputOptions): PieceInput {
     },
     moveDepth,
     setRotateMode(enabled: boolean): void {
-      // 選択が無い / 固定中のピースでは回転モードに入らない（00000003_003）
-      const next = enabled && selected !== null && !isLocked(selected);
+      // 選択が無い / 固定中のピースでは回転モードに入らない（00000003_003）。
+      // 回転なしの難易度では回転モードそのものが無いので常に入らない
+      const next = enabled && allowRotation && selected !== null && !isLocked(selected);
       if (next === rotateModeOn) return;
       // 抜けるときに回転ドラッグが残っていたら、そこまでの回転を確定させる
       commitRotateDrag();
