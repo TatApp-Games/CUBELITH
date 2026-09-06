@@ -31,7 +31,7 @@ type Palette = {
 
 /**
  * 解釈: 手動固定の色は要望に指定が無い。ヒントの金と一目で見分けられるよう銀（灰白）にする。
- * 金はヒント用（このタスクでは生成しないが、仕組みだけ 2 色に対応させておく）。
+ * 金はヒント用。銀と並んでも一目で分かるよう、彩度の高い山吹寄りの金にしている。
  */
 const PALETTES: Readonly<Record<LockIconKind, Palette>> = {
   manual: {
@@ -42,11 +42,11 @@ const PALETTES: Readonly<Record<LockIconKind, Palette>> = {
     hole: '#3a465c',
   },
   hint: {
-    body: '#ffe9a8',
-    bodyShade: '#d7a52f',
-    shackle: '#f5cd63',
-    edge: '#7a5a12',
-    hole: '#5a4413',
+    body: '#ffd23f',
+    bodyShade: '#b87a10',
+    shackle: '#ffbe1a',
+    edge: '#6b4708',
+    hole: '#4a3106',
   },
 };
 

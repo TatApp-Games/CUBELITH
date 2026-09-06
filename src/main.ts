@@ -14,6 +14,7 @@ import {
   scatterPlacements,
 } from './core/generate';
 import { subVec3 } from './core/grid';
+import { pickHintPiece } from './core/hint';
 import { placedVoxels, type Piece, type Placement } from './core/piece';
 import { createPieceInput, type PieceInput } from './input/pieceInput';
 import { createSnapControl } from './input/snapControl';
@@ -163,6 +164,15 @@ function startSession(settings: Settings): void {
   // クリア演出（SPEC.md 5.2）。クリアするまでは null
   let clearEffect: ClearEffect | null = null;
 
+  /**
+   * ヒントボタンの有効 / 無効を今の盤面から決め直す。
+   * 未固定のピースが 2 個以上あるときだけ使える（最後の 1 ピースはヒントを使えない）。
+   * 配置やロックが変わるたびに呼ぶ。
+   */
+  const refreshHintEnabled = (): void => {
+    hud?.setHintEnabled(total - game.lockedIds().length >= 2);
+  };
+
   const snap = createSnapControl({
     pieces: puzzle.pieces,
     n,
@@ -228,6 +238,7 @@ function startSession(settings: Settings): void {
     // 位置が変わったこのタイミングだけで候補を計算し直す（毎フレームは回さない）
     const active = input?.selectedPieceId() ?? null;
     snap.refresh(active !== null && game.lockKindOf(active) !== null ? null : active);
+    refreshHintEnabled();
     if (solved) showClear();
   });
 
@@ -304,11 +315,16 @@ function startSession(settings: Settings): void {
         // 同じ seed の散らし配置に戻す（SPEC.md 3.3「やり直し」）
         input?.select(null);
         for (const piece of puzzle.pieces) snapMotion.cancel(piece.id);
-        game.reset(scatterPlacements(puzzle.pieces, n, seed));
+        // ヒントで固定したピース（金ロック）は正解位置に残し、それ以外だけを散らし直す
+        const keep = game
+          .placements()
+          .filter((placement): boolean => game.lockKindOf(placement.pieceId) === 'hint');
+        game.reset(scatterPlacements(puzzle.pieces, n, seed, { keep }));
         // reset は手動固定を解く（ヒントの固定は残る）。アイコンも実際の状態へ揃え直す
         for (const piece of puzzle.pieces) {
           pieceViews.setLockIcon(piece.id, game.lockKindOf(piece.id));
         }
+        refreshHintEnabled();
       },
       onBackToTitle: (): void => {
         showTitle({ n, m, seed: randomSeed() });
@@ -335,6 +351,27 @@ function startSession(settings: Settings): void {
         hud?.setLock(next ?? 'none');
         // 固定したら候補を消し、解除したら計算し直す
         snap.refresh(next === null ? pieceId : null);
+        refreshHintEnabled();
+      },
+      onHint: (): void => {
+        const pieceId = pickHintPiece(game.placements(), puzzle.solution, game.lockedIds());
+        // 未固定が 1 個以下なら null。ボタンも無効なはずだが念のため何もしない
+        if (pieceId === null) return;
+        const answer = puzzle.solution.find((p): boolean => p.pieceId === pieceId);
+        if (answer === undefined) return;
+        // 正解位置へ送ってから固定する（place は固定済みのピースには効かないので順番が要る）
+        game.place(pieceId, answer.orientation, answer.position);
+        game.lock(pieceId, 'hint');
+        pieceViews.setLockIcon(pieceId, 'hint');
+        // 移動先で止めるので、走っているスナップの補間は打ち切る
+        snapMotion.cancel(pieceId);
+        // 選択は解除しない。選択中がそのピースなら「固定解除」を無効表示に切り替える
+        const selected = input?.selectedPieceId() ?? null;
+        if (selected === pieceId) hud?.setLock('hint');
+        snap.refresh(
+          selected !== null && game.lockKindOf(selected) !== null ? null : selected,
+        );
+        refreshHintEnabled();
       },
     }),
   );
@@ -342,6 +379,7 @@ function startSession(settings: Settings): void {
   pieceViews.updatePlacements(game.placements());
   hud.setSelected(null);
   hud.setRemaining(unsettledPieceCount(puzzle.pieces, game.placements(), n), total);
+  refreshHintEnabled();
   // 散らした直後はクリアにならないはずだが、念のため初期状態も見る
   if (game.solved()) showClear();
 }
