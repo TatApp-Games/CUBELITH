@@ -3,6 +3,10 @@
 // 2 本指で 90 度回転とピンチズーム。
 // 選択中はカメラの旋回を止め、非選択時のドラッグはカメラに任せる（排他）。
 //
+// 回転モード（setRotateMode）の間だけ、選択中のピースへのドラッグは移動ではなく連続回転になる。
+// 90 度単位に縛らずに回して見せ（onFreeRotate）、指を離した時点で最寄りの向きへ確定させる
+// （onFreeRotateEnd）。確定の計算は input/freeRotation.ts、表示は render/pieces.ts が持つ。
+//
 // 2 本指の割り当て（解釈）: SPEC.md 3.3 は回転も奥行き移動も「2 本指スワイプ **または** UI ボタン」を
 // 認めている。両方を 2 本指に載せると区別できないので、**2 本指は回転（スワイプ / ひねり）と
 // ピンチズームに割り当て、奥行き移動は HUD の「奥へ / 手前へ」ボタンとホイールに寄せる**。
@@ -26,6 +30,13 @@ const MAX_PIXELS_PER_VOXEL = 160;
 
 /** ホイールの累積量がこれを超えるたびに奥行きを 1 マス動かす。 */
 const WHEEL_PIXELS_PER_STEP = 60;
+
+/**
+ * 回転モードのドラッグ感度（ドラッグ 1 px あたりの回転角・度）。
+ * 90 度回すのに 225 px なので、スマホの短辺（〜390 px）の中で 1 回転の 1/4 を
+ * 無理なく越えられ、かつ指の震えでスナップ先が変わらない程度に鈍い。
+ */
+const ROTATE_DEGREES_PER_PIXEL = 0.4;
 
 /**
  * 近接ピックの許容半径（CSS ピクセル）。中心のレイが外れたときだけ、この半径内へずらしたレイを撃つ。
@@ -72,6 +83,17 @@ export type PieceInputOptions = {
    * マグネットスナップ（SPEC.md 3.5）を掛けるきっかけに使う。
    */
   readonly onRelease?: (pieceId: number) => void;
+  /**
+   * 回転モードのドラッグ中、表示だけの自由回転が変わったとき（90 度単位に縛られない）。
+   * 論理上の配置はまだ変えない。渡すクォータニオンは使い回しなので、
+   * 受け取り側で保持するなら中身を写すこと。
+   */
+  readonly onFreeRotate?: (pieceId: number, quaternion: THREE.Quaternion) => void;
+  /**
+   * 回転モードのドラッグから指を離したとき。最寄りの向き（24 通り）へ確定させるきっかけ。
+   * このときは onRelease（移動のマグネットスナップ）を呼ばない。
+   */
+  readonly onFreeRotateEnd?: (pieceId: number, quaternion: THREE.Quaternion) => void;
 };
 
 export type PieceInput = {
@@ -81,12 +103,20 @@ export type PieceInput = {
   select(pieceId: number | null): void;
   /** アクティブなピースを奥行き方向に 1 マス動かす（+1 = カメラから遠ざかる）。 */
   moveDepth(dir: 1 | -1): void;
+  /**
+   * 回転モードの出入り。オンの間、選択中のピースへのドラッグは移動ではなく連続回転になる。
+   * 選択が無い / 固定中のピースではオンにできないので、結果は rotateMode() で確かめる。
+   */
+  setRotateMode(enabled: boolean): void;
+  /** 今が回転モードか。 */
+  rotateMode(): boolean;
   /** イベントリスナを外す。 */
   dispose(): void;
 };
 
 /** ドラッグ 1 本分の状態。開始時に軸と感度を固定し、途中でカメラが動いてもぶれないようにする。 */
-type DragState = {
+type MoveDrag = {
+  readonly kind: 'move';
   readonly pointerId: number;
   readonly pieceId: number;
   readonly startX: number;
@@ -97,6 +127,23 @@ type DragState = {
   appliedRight: number;
   appliedUp: number;
 };
+
+/**
+ * 回転モードのドラッグ 1 本分の状態。
+ * current は「開始時の姿勢 base にドラッグ量ぶんの増分を掛けたもの」を毎回作り直して入れる
+ * （差分を積み重ねると誤差が乗るため）。
+ */
+type RotateDrag = {
+  readonly kind: 'rotate';
+  readonly pointerId: number;
+  readonly pieceId: number;
+  readonly startX: number;
+  readonly startY: number;
+  readonly base: THREE.Quaternion;
+  readonly current: THREE.Quaternion;
+};
+
+type DragState = MoveDrag | RotateDrag;
 
 
 /** ホイールの delta を px 相当に正規化する（行 / ページ単位のブラウザ対策）。 */
@@ -126,6 +173,11 @@ export function createPieceInput(options: PieceInputOptions): PieceInput {
 
   let selected: number | null = null;
   let drag: DragState | null = null;
+  /** 回転モード（HUD の「回転 / 回転解除」で切り替える）。 */
+  let rotateModeOn = false;
+  // 回転の増分を組み立てる一時オブジェクト。ドラッグ中は毎フレーム通るので使い回す
+  const yawStep = new THREE.Quaternion();
+  const pitchStep = new THREE.Quaternion();
 
   /** 固定中なら true。isLocked を渡さなければ常に false（固定の概念が無い呼び出し側）。 */
   const isLocked = (pieceId: number): boolean => options.isLocked?.(pieceId) ?? false;
@@ -233,8 +285,22 @@ export function createPieceInput(options: PieceInputOptions): PieceInput {
     return nearestId;
   };
 
+  /**
+   * 走っている回転ドラッグをその場で確定させる（指を離す以外の理由で終わるとき）。
+   * ここを通さないと、表示だけねじれたピースが残る。
+   */
+  const commitRotateDrag = (): void => {
+    if (drag === null || drag.kind !== 'rotate') return;
+    const finished = drag;
+    drag = null;
+    options.onFreeRotateEnd?.(finished.pieceId, finished.current);
+  };
+
   const setSelected = (pieceId: number | null): void => {
     if (selected === pieceId) return;
+    // 選択が変わったら回転モードは自動で解除する（回転は選んだピースに紐づく操作）
+    commitRotateDrag();
+    rotateModeOn = false;
     selected = pieceId;
     // 選択中のドラッグはピース移動。非選択時だけカメラを旋回・ズームさせる
     orbit.enabled = pieceId === null;
@@ -263,9 +329,12 @@ export function createPieceInput(options: PieceInputOptions): PieceInput {
       orbit.zoomBy(action.scale);
       return;
     }
+    // 回転モードでは 2 本指の 90 度回転を無効にする（回転はドラッグの連続回転へ一本化する）。
+    // ズーム（上の分岐）だけは回転モードでも効かせる
+    if (rotateModeOn) return;
     const pieceId = selected;
     const onRotate = options.onRotate;
-    // ズーム（上の分岐）は固定中でも効かせる。回るのは固定していないピースだけ
+    // ズームは固定中でも効かせる。回るのは固定していないピースだけ
     if (pieceId === null || onRotate === undefined || isLocked(pieceId)) return;
     const axes = currentAxes();
     const step =
@@ -278,13 +347,38 @@ export function createPieceInput(options: PieceInputOptions): PieceInput {
     onRotate(pieceId, step.axis, screenSign * step.sign > 0 ? 1 : -1);
   };
 
+  /**
+   * 回転モードのドラッグ量から、カメラ基底まわりのトラックボール回転を作って current に入れる。
+   *
+   * 向きの割り当ては 2 本指の 90 度回転（applyTwoFinger）と同じ「見たまま回る」考え方:
+   * 右へドラッグ → カメラの上ベクトルまわりに +、上へドラッグ → カメラの右ベクトルまわりに −。
+   * 毎回 base から作り直すので、ドラッグを往復させても誤差が溜まらない。
+   */
+  const updateRotateDrag = (state: RotateDrag, clientX: number, clientY: number): void => {
+    const dx = clientX - state.startX;
+    const dy = clientY - state.startY;
+    camera.updateMatrixWorld();
+    cameraRight.setFromMatrixColumn(camera.matrixWorld, 0).normalize();
+    cameraUp.setFromMatrixColumn(camera.matrixWorld, 1).normalize();
+    yawStep.setFromAxisAngle(cameraUp, THREE.MathUtils.degToRad(dx * ROTATE_DEGREES_PER_PIXEL));
+    // 画面の y は下向きなので、上へのドラッグ（dy < 0）がそのまま右軸まわりの − になる
+    pitchStep.setFromAxisAngle(
+      cameraRight,
+      THREE.MathUtils.degToRad(dy * ROTATE_DEGREES_PER_PIXEL),
+    );
+    // カメラ基底（外側の軸）まわりの回転なので、開始時の姿勢へ左から重ねる
+    state.current.copy(yawStep).multiply(pitchStep).multiply(state.base);
+  };
+
   const onPointerDown = (event: PointerEvent): void => {
     // マウスは主ボタンだけを扱う（タッチ / ペンの button は 0）
     if (event.button !== 0) return;
     pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
 
     if (pointers.size >= 2) {
-      // 2 本目が来たらドラッグ移動をやめ、選択中なら 2 本指ジェスチャに切り替える
+      // 2 本目が来たらドラッグ移動をやめ、選択中なら 2 本指ジェスチャに切り替える。
+      // 回転ドラッグの途中なら、そこまでの回転を確定させてから切り替える
+      commitRotateDrag();
       drag = null;
       const pair = firstTwoPointers();
       gestureActive = selected !== null && pair !== null;
@@ -301,7 +395,24 @@ export function createPieceInput(options: PieceInputOptions): PieceInput {
     setSelected(pieceId);
     // 固定中のピースは選ぶだけ。ドラッグ移動は始めない
     if (isLocked(pieceId)) return;
+    if (rotateModeOn) {
+      // 回転モード（別のピースを掴んだなら setSelected が解除しているのでここには来ない）。
+      // ギズモはまだ無いので、ドラッグ全体をトラックボール回転として扱う（次タスク 00000003_006）
+      drag = {
+        kind: 'rotate',
+        pointerId: event.pointerId,
+        pieceId,
+        startX: event.clientX,
+        startY: event.clientY,
+        // 直前のドラッグは指を離した時点で確定済みなので、姿勢は毎回そこから始まる
+        base: new THREE.Quaternion(),
+        current: new THREE.Quaternion(),
+      };
+      domElement.setPointerCapture(event.pointerId);
+      return;
+    }
     drag = {
+      kind: 'move',
       pointerId: event.pointerId,
       pieceId,
       startX: event.clientX,
@@ -326,6 +437,14 @@ export function createPieceInput(options: PieceInputOptions): PieceInput {
     }
 
     if (drag === null || drag.pointerId !== event.pointerId) return;
+
+    if (drag.kind === 'rotate') {
+      // 回転モードは 90 度単位に縛らず、ドラッグ量そのままの角度で回して見せる
+      updateRotateDrag(drag, event.clientX, event.clientY);
+      options.onFreeRotate?.(drag.pieceId, drag.current);
+      return;
+    }
+
     const dx = event.clientX - drag.startX;
     const dy = event.clientY - drag.startY;
     // 四捨五入なので半マス分ドラッグするまでは動かない = そのままクリックの遊びになる
@@ -347,8 +466,14 @@ export function createPieceInput(options: PieceInputOptions): PieceInput {
 
     // 手を離したのがどのピースの操作だったかを、状態を消す前に控えておく
     if (drag !== null && drag.pointerId === event.pointerId) {
-      pendingRelease = drag.pieceId;
-      drag = null;
+      if (drag.kind === 'rotate') {
+        // 回転モードは離した時点で最寄りの向きへ確定させる。移動のスナップ（onRelease）は通さない
+        updateRotateDrag(drag, event.clientX, event.clientY);
+        commitRotateDrag();
+      } else {
+        pendingRelease = drag.pieceId;
+        drag = null;
+      }
     } else if (gestureActive && pointers.size < 2) {
       pendingRelease = selected;
     }
@@ -360,8 +485,9 @@ export function createPieceInput(options: PieceInputOptions): PieceInput {
     if (pointers.size === 0 && pendingRelease !== null) {
       const released = pendingRelease;
       pendingRelease = null;
-      // 固定中のピースはスナップさせない（吸い付いて動いてしまわないように）
-      if (options.onRelease && !isLocked(released)) options.onRelease(released);
+      // 固定中のピースはスナップさせない（吸い付いて動いてしまわないように）。
+      // 回転モード中も移動していないので、移動のマグネットスナップは掛けない
+      if (options.onRelease && !isLocked(released) && !rotateModeOn) options.onRelease(released);
     }
   };
 
@@ -396,6 +522,17 @@ export function createPieceInput(options: PieceInputOptions): PieceInput {
       setSelected(pieceId);
     },
     moveDepth,
+    setRotateMode(enabled: boolean): void {
+      // 選択が無い / 固定中のピースでは回転モードに入らない（00000003_003）
+      const next = enabled && selected !== null && !isLocked(selected);
+      if (next === rotateModeOn) return;
+      // 抜けるときに回転ドラッグが残っていたら、そこまでの回転を確定させる
+      commitRotateDrag();
+      rotateModeOn = next;
+    },
+    rotateMode(): boolean {
+      return rotateModeOn;
+    },
     dispose(): void {
       domElement.removeEventListener('pointerdown', onPointerDown, captureOptions);
       domElement.removeEventListener('pointermove', onPointerMove, captureOptions);
@@ -404,6 +541,7 @@ export function createPieceInput(options: PieceInputOptions): PieceInput {
       domElement.removeEventListener('wheel', onWheel, captureOptions);
       pointers.clear();
       drag = null;
+      rotateModeOn = false;
       gestureActive = false;
       pendingRelease = null;
     },

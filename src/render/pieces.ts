@@ -52,6 +52,9 @@ export type ViewOffset = { readonly x: number; readonly y: number; readonly z: n
 /** ずれ無し。 */
 const NO_OFFSET: ViewOffset = { x: 0, y: 0, z: 0 };
 
+/** 自由回転の行列を作るときのスケール（ボクセルの大きさはジオメトリ側が持つので常に等倍）。 */
+const UNIT_SCALE = new THREE.Vector3(1, 1, 1);
+
 /** ピース群の描画。配置が変わったら updatePlacements を呼ぶ。 */
 export type PieceViews = {
   /** シーンに追加するルート。N×N×N の中心が原点に来るようオフセットしてある。 */
@@ -69,6 +72,12 @@ export type PieceViews = {
    * 論理上の配置は動かさないので、スナップの補間中でもクリア判定は整数座標のまま。
    */
   setOffset(pieceId: number, offset: ViewOffset | null): void;
+  /**
+   * 表示だけを 90 度単位に縛られず回す（null で解除）。回転モードのドラッグ中に使う。
+   * 回転の中心はそのピースの配置後ボクセルの重心で、論理上の向き（orientation）は変えない。
+   * 指を離した時点で呼び出し側が最寄りの向きへ確定させ、ここを null に戻す。
+   */
+  setFreeRotation(pieceId: number, quaternion: THREE.Quaternion | null): void;
   /**
    * 内部発光コアの明滅を進める（SPEC.md 4 章）。elapsedSeconds は起動からの経過秒。
    * ピースごとに位相をずらしたサイン波で呼吸する。
@@ -228,37 +237,59 @@ export function createPieceViews(
   let glowBoost = 0;
 
   const matrix = new THREE.Matrix4();
+  // 自由回転の行列作りに使う一時ベクトル。ドラッグ中は毎フレーム通るので作り直さない
+  const rotated = new THREE.Vector3();
   // 補間中の表示のずれと、そのやり直しに使う直近の配置
   const offsets = new Map<number, ViewOffset>();
   const lastPlacements = new Map<number, Placement>();
+  // 表示だけの自由回転（回転モード中のピースだけが入る）
+  const freeRotations = new Map<number, THREE.Quaternion>();
 
-  /** 1 ピース分のインスタンス行列を書き直す。表示のずれはここでだけ足す。 */
+  /** 1 ピース分のインスタンス行列を書き直す。表示のずれと自由回転はここでだけ足す。 */
   const applyPlacement = (placement: Placement): void => {
     const piece = pieceById.get(placement.pieceId);
     const mesh = meshes.get(placement.pieceId);
     if (!piece || !mesh) throw new Error(`未知のピース id ${placement.pieceId}`);
     const offset = offsets.get(placement.pieceId) ?? NO_OFFSET;
-    // ロックアイコンを置く「ピースの中心」= 配置後ボクセルの重心（局所原点は端に寄ることがある）
+    const freeRotation = freeRotations.get(placement.pieceId);
+    const voxels = placedVoxels(piece, placement);
+    // 「ピースの中心」= 配置後ボクセルの重心（局所原点は端に寄ることがある）。
+    // ロックアイコンを置く点であり、自由回転の回転中心でもある。
+    // 重心まわりの回転は重心を動かさないので、自由回転中もアイコンの位置は変わらない
     let sumX = 0;
     let sumY = 0;
     let sumZ = 0;
-    // ボクセルは立方体なので向きは placedVoxels の座標に織り込み済み。行列は平行移動だけでよい
-    const voxels = placedVoxels(piece, placement);
+    for (const voxel of voxels) {
+      sumX += voxel.x;
+      sumY += voxel.y;
+      sumZ += voxel.z;
+    }
+    const count = Math.max(voxels.length, 1);
+    const centerX = sumX / count + offset.x;
+    const centerY = sumY / count + offset.y;
+    const centerZ = sumZ / count + offset.z;
+
     voxels.forEach((voxel, i): void => {
-      const x = voxel.x + offset.x;
-      const y = voxel.y + offset.y;
-      const z = voxel.z + offset.z;
-      matrix.makeTranslation(x, y, z);
+      let x = voxel.x + offset.x;
+      let y = voxel.y + offset.y;
+      let z = voxel.z + offset.z;
+      if (freeRotation === undefined) {
+        // 通常時: ボクセルは立方体で向きは placedVoxels の座標に織り込み済み。平行移動だけでよい
+        matrix.makeTranslation(x, y, z);
+      } else {
+        // 回転モード中: 中心まわりに回した位置へ、ボクセル自身も同じだけ回して置く
+        rotated.set(x - centerX, y - centerY, z - centerZ).applyQuaternion(freeRotation);
+        x = centerX + rotated.x;
+        y = centerY + rotated.y;
+        z = centerZ + rotated.z;
+        matrix.compose(rotated.set(x, y, z), freeRotation, UNIT_SCALE);
+      }
       mesh.setMatrixAt(i, matrix);
       // 発光コアと稜線はボクセルの中心に置く（ボクセル本体と同じ座標）
       cores.setPosition(placement.pieceId, i, x, y, z);
       edges?.setPosition(placement.pieceId, i, x, y, z);
-      sumX += x;
-      sumY += y;
-      sumZ += z;
     });
-    const count = Math.max(voxels.length, 1);
-    lockIcons.setPosition(placement.pieceId, sumX / count, sumY / count, sumZ / count);
+    lockIcons.setPosition(placement.pieceId, centerX, centerY, centerZ);
     mesh.instanceMatrix.needsUpdate = true;
     // インスタンスを動かしたら境界球を捨てる。three の InstancedMesh.raycast は境界球との交差で
     // まずふるいに掛け、null のときだけ作り直す。古い球を使い回すと、動かしたピースが球の外へ
@@ -336,6 +367,19 @@ export function createPieceViews(
       const placement = lastPlacements.get(pieceId);
       if (placement !== undefined) applyPlacement(placement);
     },
+    setFreeRotation(pieceId: number, quaternion: THREE.Quaternion | null): void {
+      if (quaternion === null) {
+        // 掛かっていなければ書き直す必要も無い（通常時の負荷を増やさない）
+        if (!freeRotations.delete(pieceId)) return;
+      } else {
+        // 呼び出し側が同じ Quaternion を使い回しても壊れないよう、中身を写して持つ
+        const existing = freeRotations.get(pieceId);
+        if (existing) existing.copy(quaternion);
+        else freeRotations.set(pieceId, quaternion.clone());
+      }
+      const placement = lastPlacements.get(pieceId);
+      if (placement !== undefined) applyPlacement(placement);
+    },
     updateGlow(elapsedSeconds: number): void {
       cores.update(elapsedSeconds);
     },
@@ -356,6 +400,7 @@ export function createPieceViews(
     },
     dispose(): void {
       offsets.clear();
+      freeRotations.clear();
       lastPlacements.clear();
       lockIcons.dispose();
       edges?.dispose();
