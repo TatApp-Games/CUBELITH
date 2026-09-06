@@ -16,6 +16,7 @@ import {
 import { subVec3 } from './core/grid';
 import { pickHintPiece } from './core/hint';
 import { placedVoxels, type Piece, type Placement } from './core/piece';
+import { snappedOrientation } from './input/freeRotation';
 import { createPieceInput, type PieceInput } from './input/pieceInput';
 import { createSnapControl } from './input/snapControl';
 import { createSnapAudio } from './render/audio';
@@ -163,6 +164,22 @@ function startSession(settings: Settings): void {
   let finished = false;
   // クリア演出（SPEC.md 5.2）。クリアするまでは null
   let clearEffect: ClearEffect | null = null;
+  /** 回転モードで表示だけをねじっているピース。ねじれたまま残さないよう必ずここで覚えておく。 */
+  let freeRotated: number | null = null;
+
+  /** 表示だけの自由回転を解く（論理上の配置は触らない）。 */
+  const clearFreeRotation = (): void => {
+    if (freeRotated === null) return;
+    pieceViews.setFreeRotation(freeRotated, null);
+    freeRotated = null;
+  };
+
+  /** 回転モードを抜けて、HUD のラベルと表示のねじれを元へ戻す。 */
+  const exitRotateMode = (): void => {
+    input?.setRotateMode(false);
+    clearFreeRotation();
+    hud?.setRotateMode(false);
+  };
 
   /**
    * ヒントボタンの有効 / 無効を今の盤面から決め直す。
@@ -192,6 +209,8 @@ function startSession(settings: Settings): void {
   const showClear = (): void => {
     if (finished) return;
     finished = true;
+    // 回転モードのねじれを解いてから片付ける（クリアした形が歪んで見えないように）
+    exitRotateMode();
     // 選択を解いてからカメラ操作を戻す（select(null) が orbit.enabled を true にする）
     input?.select(null);
     input?.dispose();
@@ -252,7 +271,10 @@ function startSession(settings: Settings): void {
     // 固定中のピースは選べるが動かせない（ドラッグ・奥行き・2 本指回転・スナップを止める）
     isLocked: (pieceId): boolean => game.lockKindOf(pieceId) !== null,
     onSelectionChange: (pieceId): void => {
+      // 選択が変わると入力側が回転モードを解除する。表示のねじれもここで戻す
+      clearFreeRotation();
       pieceViews.setHighlighted(pieceId);
+      // setSelected は回転モードの表示も 'off' に戻す（Hud.setSelected の注記）
       hud?.setSelected(pieceId);
       hud?.setLock(pieceId === null ? 'none' : (game.lockKindOf(pieceId) ?? 'none'));
       // 固定中のピースは吸い付かないので候補も出さない
@@ -272,6 +294,29 @@ function startSession(settings: Settings): void {
       // 手を離した瞬間に吸い付かせる（SPEC.md 3.5）
       snap.release(pieceId);
     },
+    // 回転モードのドラッグ中。論理上の配置は変えず、表示だけを連続的に回す
+    onFreeRotate: (pieceId, quaternion): void => {
+      freeRotated = pieceId;
+      pieceViews.setFreeRotation(pieceId, quaternion);
+    },
+    // 指を離したら最寄りの向き（24 通り）へスナップして確定させる。
+    // 解釈: ドラッグ中の表示は重心まわりに回すが、確定は SPEC.md 3.3 のとおり局所原点まわりの
+    // 回転（位置はそのまま向き id だけを差し替える）なので、確定の瞬間にピースが半マス前後
+    // ずれて見えることがある。HUD の 90 度回転ボタンや 2 本指回転と同じ動きに揃えている
+    onFreeRotateEnd: (pieceId, quaternion): void => {
+      const placement = game.placementOf(pieceId);
+      if (placement !== undefined) {
+        // 位置は変えない。向きだけを「今の向きに自由回転を重ねた姿勢」の最寄りへ置き換える。
+        // 45 度も回さずに離したときは向きが変わらないので、クリア判定も回さない
+        const next = snappedOrientation(placement.orientation, quaternion);
+        if (next !== placement.orientation) game.place(pieceId, next, placement.position);
+      }
+      // 確定した向きで描き直したいので、表示だけのねじれはここで解く
+      clearFreeRotation();
+      // 向きが変わればスナップ候補も変わる（クリアして入力が外れていれば候補は出さない）
+      const active = input?.selectedPieceId() ?? null;
+      snap.refresh(active !== null && game.lockKindOf(active) !== null ? null : active);
+    },
   });
 
   session = {
@@ -283,6 +328,8 @@ function startSession(settings: Settings): void {
     },
     dispose(): void {
       finished = true;
+      // 表示だけのねじれを解いてから捨てる（破棄の順で状態が残らないように）
+      clearFreeRotation();
       input?.dispose();
       input = null;
       hud = null;
@@ -313,6 +360,7 @@ function startSession(settings: Settings): void {
       },
       onReset: (): void => {
         // 同じ seed の散らし配置に戻す（SPEC.md 3.3「やり直し」）
+        exitRotateMode();
         input?.select(null);
         for (const piece of puzzle.pieces) snapMotion.cancel(piece.id);
         // ヒントで固定したピース（金ロック）は正解位置に残し、それ以外だけを散らし直す
@@ -340,6 +388,8 @@ function startSession(settings: Settings): void {
         // ヒントで置いたピース（金ロック）は解除できない
         if (kind === 'hint') return;
         if (kind === null) {
+          // 固定すると回転もできなくなるので、走っている回転を先に確定させてから固定する
+          exitRotateMode();
           game.lock(pieceId, 'manual');
           // 固定した位置で止めるので、走っているスナップの補間は打ち切る
           snapMotion.cancel(pieceId);
@@ -353,12 +403,25 @@ function startSession(settings: Settings): void {
         snap.refresh(next === null ? pieceId : null);
         refreshHintEnabled();
       },
+      onToggleRotateMode: (): void => {
+        if (input === null) return;
+        if (input.rotateMode()) {
+          // 抜けるときは表示のねじれを戻す（確定は指を離した時点で済んでいる）
+          exitRotateMode();
+          return;
+        }
+        // 入れたかどうかは入力側が決める（選択が無い / 固定中なら入らない）
+        input.setRotateMode(true);
+        hud?.setRotateMode(input.rotateMode());
+      },
       onHint: (): void => {
         const pieceId = pickHintPiece(game.placements(), puzzle.solution, game.lockedIds());
         // 未固定が 1 個以下なら null。ボタンも無効なはずだが念のため何もしない
         if (pieceId === null) return;
         const answer = puzzle.solution.find((p): boolean => p.pieceId === pieceId);
         if (answer === undefined) return;
+        // ヒントで置くピースが回転モード中なら、そのねじれを先に片付ける
+        if (freeRotated === pieceId) exitRotateMode();
         // 正解位置へ送ってから固定する（place は固定済みのピースには効かないので順番が要る）
         game.place(pieceId, answer.orientation, answer.position);
         game.lock(pieceId, 'hint');
