@@ -1,0 +1,11 @@
+{
+  "name": "crystal-assemble",
+  "private": true,
+  "description": "ルートからのコマンド委譲のみ。依存は持たない（実体は WebMock/package.json）",
+  "scripts": {
+    "dev": "npm --prefix WebMock run dev",
+    "test": "npm --prefix WebMock test",
+    "build": "npm --prefix WebMock run build",
+    "setup": "npm --prefix WebMock install"
+  }
+}
