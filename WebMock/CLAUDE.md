@@ -10,6 +10,8 @@
 
 ## コマンド
 
+実行はこのディレクトリで。リポジトリルートからも同名の `npm test` / `npm run build` / `npm run dev` が委譲される（ルートの `package.json`）。
+
 ```
 npm install        依存の導入（初回）
 npm run dev        開発サーバ（http://localhost:5173）
@@ -53,9 +55,8 @@ tests/        Vitest。core の全公開関数にテストを付ける
 
 ## 進め方（Auto_Tasks による自動実装）
 
-- このプロジェクトは Auto_Tasks の要望駆動の新運用で開発する。人は要望をテキストにして `Auto_Tasks/00_要望/` に置く（または `/auto-tasks-request <パス>`）。運用の詳細は `Utility/自動化運用/Auto_Tasks運用ガイド.md`
+- git リポジトリと `Auto_Tasks/` は**リポジトリルート（`WebMock/` の親）**にある。watch はルートで回す。運用の詳細はルートの `CLAUDE.md` と `Utility/自動化運用/Auto_Tasks運用ガイド.md`
 - 要望は「SPEC.md の内容で Web モックを作成して」のように仕様全体を指してよい。その場合、分解は **`SPEC.md` 8 章のマイルストーン順（M1 → M2 → …）にタスクを切る**。M0（雛形）は準備済み。1 タスクは 1 マイルストーン以下の粒度にする
-- タスクの verify は `npm test`（core の変更）または `npm run build`（描画・UI の変更）。見た目・手触りは verify 省略で人が確認する
-- scope の目安: core の作業は `src/core/,tests/`、描画は `src/render/,src/main.ts`、UI は `src/ui/,index.html`
+- タスクの verify は**ルートから** `npm test`（core の変更）または `npm run build`（描画・UI の変更）。見た目・手触りは verify 省略で人が確認する
+- **scope はルートからの相対パスで書き、`WebMock/` を前置きする**。core の作業は `WebMock/src/core/,WebMock/tests/`、描画は `WebMock/src/render/,WebMock/src/main.ts`、UI は `WebMock/src/ui/,WebMock/index.html`
 - watch の元ブランチは `develop`。`main` の上で watch を回さない（常時マージのため）。`main` へは人が確認してからマージする
-- `Auto_Tasks/` は git 管理外（.gitignore 済み）
