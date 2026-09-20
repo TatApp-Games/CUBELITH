@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <!-- iOS のホーム画面起動でもステータスバーまで描画を伸ばす（env(safe-area-inset-*) が効くようにする） -->
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="theme-color" content="#0b0f1a" />
+    <title>GEODIA</title>
+    <style>
+      html, body {
+        margin: 0; height: 100%; overflow: hidden;
+        background: #0b0f1a; color: #e8ecf5; font-family: system-ui, sans-serif;
+        /* iOS Safari 対策（SPEC.md 6 章）:
+           長押しのコンテキストメニュー・テキスト選択・タップのハイライト・
+           スクロールの連鎖（ページ全体のバウンド）を止める */
+        -webkit-touch-callout: none;
+        -webkit-user-select: none;
+        user-select: none;
+        -webkit-tap-highlight-color: transparent;
+        overscroll-behavior: none;
+        touch-action: none;
+      }
+      #app { position: fixed; inset: 0; }
+      #app canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+      /* UI は Three.js のキャンバスに重ねる。帯や背景は入力を透かし、押せる要素だけが拾う */
+      #ui { position: fixed; inset: 0; pointer-events: none; }
+      #ui > * { pointer-events: auto; }
+
+      /* 3 画面で共通のボタン。指で押せるよう 44px 以上（SPEC.md 6 章） */
+      .ui-button {
+        pointer-events: auto;
+        box-sizing: border-box;
+        min-width: 76px; min-height: 44px; padding: 0 14px;
+        font: inherit; font-size: 14px; color: #e8ecf5;
+        background: rgba(40, 54, 84, 0.85); border: 1px solid rgba(150, 180, 230, 0.35);
+        border-radius: 10px; cursor: pointer; touch-action: manipulation;
+      }
+      .ui-button:hover:not(:disabled) { background: rgba(58, 78, 120, 0.9); }
+      .ui-button:active:not(:disabled) { background: rgba(80, 106, 158, 0.95); }
+      .ui-button:disabled { opacity: 0.35; cursor: default; }
+      .ui-button--wide { min-width: 128px; }
+      /* N / M の選択肢。数字だけなので幅は詰めるが、高さ 44px は保つ */
+      .ui-button--option { min-width: 56px; }
+      .ui-button--primary {
+        min-height: 52px; font-size: 16px; font-weight: 600;
+        background: rgba(70, 116, 190, 0.95); border-color: rgba(180, 210, 255, 0.55);
+      }
+      .ui-button--primary:hover:not(:disabled) { background: rgba(92, 140, 216, 0.95); }
+      .ui-button.is-selected {
+        background: rgba(96, 146, 224, 0.95); border-color: rgba(200, 226, 255, 0.8); font-weight: 600;
+      }
+
+      /* プレイ中 HUD。スマホでは画面下部に寄せる（SPEC.md 6 章）。
+         帯そのものは入力を透かし、ボタンだけが拾う（帯の余白でカメラ操作が死なないように） */
+      #ui > #hud {
+        position: absolute; left: 0; right: 0; bottom: 0;
+        display: flex; flex-direction: column; align-items: center; gap: 6px;
+        padding: 8px calc(8px + env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) calc(8px + env(safe-area-inset-left));
+        background: linear-gradient(to top, rgba(11, 15, 26, 0.9), rgba(11, 15, 26, 0));
+        pointer-events: none;
+      }
+      #hud-status {
+        display: flex; flex-wrap: wrap; justify-content: center; gap: 2px 12px;
+        font-size: 12px; text-align: center;
+      }
+      #hud-remaining { font-weight: 600; }
+      #hud-hint { opacity: 0.7; }
+      .hud-row { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; }
+      /* ピース操作行。選択中のピースが無いときは hud.ts が display: none にする。
+         回転モードのトグル + 固定が並ぶので、狭い画面では幅を詰めて折り返す（高さ 44px は維持） */
+      #hud-piece-controls { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+      #hud-piece-controls .ui-button { min-width: 0; padding: 0 12px; }
+      /* 常時表示のフッター。5 つ並ぶので幅は詰め、狭い画面では折り返す（高さ 44px は維持） */
+      #hud-footer { max-width: 100%; }
+      #hud-footer .ui-button { min-width: 0; padding: 0 10px; font-size: 13px; }
+
+      /* タイトル / クリアの重ね画面。背景は透かしてパネルだけが入力を拾う */
+      #ui > .screen {
+        position: absolute; inset: 0;
+        display: flex; justify-content: center;
+        padding: calc(16px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right)) 16px calc(16px + env(safe-area-inset-left));
+        pointer-events: none;
+      }
+      .screen--center { align-items: center; }
+      .screen--bottom { align-items: flex-end; padding-bottom: calc(16px + env(safe-area-inset-bottom)); }
+      .screen-panel {
+        pointer-events: auto; box-sizing: border-box;
+        width: min(420px, 100%); max-height: 100%; overflow-y: auto;
+        display: flex; flex-direction: column; align-items: center; gap: 14px;
+        padding: 20px; border-radius: 16px; text-align: center;
+        background: rgba(14, 20, 34, 0.92); border: 1px solid rgba(150, 180, 230, 0.25);
+        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+      }
+      .screen-title { margin: 0; font-size: 24px; font-weight: 600; letter-spacing: 0.08em; }
+      .screen-lead { margin: 0; font-size: 13px; opacity: 0.75; }
+      .screen-seed { font-size: 11px; opacity: 0.5; letter-spacing: 0.04em; }
+      .option-group { width: 100%; display: flex; flex-direction: column; align-items: center; gap: 6px; }
+      .option-label { font-size: 12px; opacity: 0.7; }
+      .option-row { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; }
+
+      /* 計測用の簡易 FPS 表示（?fps=1 のときだけ DOM が作られる）。操作の邪魔をしない */
+      #ui > #fps-meter {
+        position: absolute; top: calc(6px + env(safe-area-inset-top)); right: calc(8px + env(safe-area-inset-right));
+        padding: 3px 7px; border-radius: 6px;
+        font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: #b7d4ff; background: rgba(11, 15, 26, 0.6);
+        pointer-events: none;
+      }
+
+      /* クリアの見出し */
+      #clear-banner {
+        position: absolute; top: 16%; left: 0; right: 0;
+        text-align: center; font-size: 14vmin; font-weight: 700; letter-spacing: 0.12em;
+        color: #dff0ff; text-shadow: 0 0 24px rgba(140, 200, 255, 0.85);
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="ui"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

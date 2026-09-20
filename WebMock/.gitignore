@@ -1,0 +1,6 @@
+node_modules/
+dist/
+Auto_Tasks/
+.vite/
+*.log
+.DS_Store
