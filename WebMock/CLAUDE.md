@@ -6,7 +6,8 @@
 
 - TypeScript（strict）+ Vite + Three.js。UI は素の HTML / CSS
 - テストは Vitest（`tests/`）。対象は `src/core`（ゲームロジック）
-- 依存はこの 4 つ（`three` / `vite` / `typescript` / `vitest`）。足すときは理由をこの節に書く
+- 依存はこの 5 つ（`three` / `vite` / `typescript` / `vitest` / `vite-node`）。足すときは理由をこの節に書く
+- `vite-node` は `src/core` を import する TypeScript のスクリプト（`scripts/`）を Node で実行するために足した（`npm run export:fixtures`）。vitest の依存としてすでに `node_modules` に入っているので、新たな取得は要らない
 
 ## コマンド
 
@@ -17,6 +18,7 @@ npm install        依存の導入（初回）
 npm run dev        開発サーバ（http://localhost:5173）
 npm test           Vitest を 1 回実行（watch なし）
 npm run build      型チェック（tsc --noEmit）+ 本番ビルド（dist/）
+npm run export:fixtures   UE 版と照合するデータを ../Source/CUBELITHCore/Private/Tests/Fixtures/ へ書き出す
 ```
 
 ## URL クエリ（検証用）
@@ -38,6 +40,7 @@ src/render/   Three.js。シーン・マテリアル・演出
 src/input/    ポインタ / タッチ入力 → ゲーム操作
 src/ui/       画面と HUD（HTML）
 tests/        Vitest。core の全公開関数にテストを付ける
+scripts/      Node で走らせる補助スクリプト。UE 版と照合するデータの書き出し（ブラウザには載らない）
 ```
 
 座標は `Vec3 = { x, y, z }`（読み取り専用のオブジェクト）で統一する。向きは 0..23 の整数 id で、`composeOrientation(a, b)` は「a を適用してから b」の順（`src/core/grid.ts`）。
