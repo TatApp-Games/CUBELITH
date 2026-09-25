@@ -1,4 +1,4 @@
-# CUBELITH / Crystal Assemble
+# CUBELITH
 
 プロシージャル 3D 組み立てパズル。**この CLAUDE.md はリポジトリ全体の入口**で、各サブプロジェクトの詳細（コマンド・開発ルール・タスクの切り方）はそれぞれの `CLAUDE.md` に置く。ルートには特定のサブプロジェクト専用のファイル（`package.json` など）を置かない。
 
@@ -25,7 +25,7 @@ Auto_Tasks/           自動実装体制の作業フォルダ（git 管理外）
 ## リポジトリ
 
 - git リポジトリは**このルート 1 本**。`WebMock/` 配下に `.git` を作らない（2026-09-21 に WebMock のローカルリポジトリをここへ統合した。統合前の `auto/*` ブランチは `../WebMock-history-260921.bundle` に保管）
-- ブランチは `develop`（作業）と `main`（人が確認してマージ）。リモートは `origin`（TatApp-Games/CrystalAssemble）
+- ブランチは `develop`（作業）と `main`（人が確認してマージ）。リモートは `origin`（TatApp-Games/CUBELITH。2026-09-25 に CrystalAssemble から改名）
 - 統合前（2026-09-21 以前）の `WebMock/` のファイル別履歴は**旧パス**で引く（例: `git log --full-history -- src/core/grid.ts`）。`git blame WebMock/src/core/grid.ts` は旧パスまで遡るのでそのまま使える
 
 ## 進め方（Auto_Tasks による自動実装）
