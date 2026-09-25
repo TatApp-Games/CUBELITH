@@ -1,6 +1,6 @@
-// プレイ中の HUD（SPEC.md 6 章）。素の HTML + CSS で作り、Three.js のキャンバスに重ねる。
+// プレイ中の HUD（RULES.md 6 章）。素の HTML + CSS で作り、Three.js のキャンバスに重ねる。
 // 上から「ステータス行 / ピース操作行（選択中だけ表示）/ フッター行（常時表示）」の 3 段構成。
-// 回転はボタンを置かずジェスチャ / ギズモに任せる。奥行きはカメラを回してドラッグで動かす（SPEC.md 3.3）。
+// 回転はボタンを置かずジェスチャ / ギズモに任せる。奥行きはカメラを回してドラッグで動かす（RULES.md 3.3）。
 // スマホ向けに画面下部へ寄せ、ボタンは 44 px 以上（サイズの保証は index.html の .ui-button）。
 // クリア表示はクリア画面（clearScreen.ts）が担うので、ここでは持たない。
 
@@ -8,7 +8,7 @@ import type { Screen } from './screens';
 import { createButton, setSelected as setSelectedStyle } from './widgets';
 
 export type HudCallbacks = {
-  /** 同じ seed の散らし配置に戻す（SPEC.md 3.3「やり直し」）。 */
+  /** 同じ seed の散らし配置に戻す（RULES.md 3.3「やり直し」）。 */
   readonly onReset: () => void;
   /** タイトル（難易度選択）へ戻る。 */
   readonly onBackToTitle: () => void;
@@ -41,7 +41,7 @@ export type LockState = 'none' | 'manual' | 'hint';
 export type Hud = Screen & {
   /** 選択中のピースを伝える。null ならピース操作行を隠す。 */
   setSelected(pieceId: number | null): void;
-  /** 残りピース数（SPEC.md 6 章）。数え方は progress.ts の「解釈:」を参照。 */
+  /** 残りピース数（RULES.md 6 章）。数え方は progress.ts の「解釈:」を参照。 */
   setRemaining(remaining: number, total: number): void;
   /**
    * 選択中のピースの固定状態を伝える。ボタンのラベルと、動かす操作の有効 / 無効が切り替わる。

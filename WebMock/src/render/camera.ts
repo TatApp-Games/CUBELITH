@@ -1,4 +1,4 @@
-// 注視点まわりの軌道カメラ（SPEC.md 3.3「カメラ」）。ドラッグで旋回、ホイール / ピンチでズーム。
+// 注視点まわりの軌道カメラ（RULES.md 3.3「カメラ」）。ドラッグで旋回、ホイール / ピンチでズーム。
 // 依存を増やさないため OrbitControls は使わず自前で実装する。
 // M3 でピース操作中にカメラを止められるよう、enabled で旋回 / ズームを切り替えられるようにしてある。
 
@@ -45,7 +45,7 @@ export type OrbitCamera = {
   frame(boundingRadius: number): void;
   /**
    * 自動旋回の速さ（rad/s）。0 で停止。
-   * クリア演出（SPEC.md 5.2-4）で立方体の周囲をゆっくり回すのに使う。enabled とは独立で、
+   * クリア演出（RULES.md 5.2-4）で立方体の周囲をゆっくり回すのに使う。enabled とは独立で、
    * 手動操作を止めたまま（enabled = false）でも回り続ける。
    */
   setAutoRotate(speed: number): void;

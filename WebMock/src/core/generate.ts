@@ -1,4 +1,4 @@
-// 領域拡張（Region Growing）による分割と、プレイ開始時の初期散らし（SPEC.md 3.2）。
+// 領域拡張（Region Growing）による分割と、プレイ開始時の初期散らし（RULES.md 3.2）。
 // Three.js に依存しない純粋なロジック。乱数は必ず createRng を通す（Math.random を使わない）。
 
 import {
@@ -14,11 +14,11 @@ import { createPiece, localOrigin, placedVoxels, type Piece, type Placement } fr
 import { createRng, type Rng } from './rng';
 import { isSolved } from './solve';
 
-/** 空間サイズ N の下限（SPEC.md 3.1）。 */
+/** 空間サイズ N の下限（RULES.md 3.1）。 */
 export const MIN_SPACE_SIZE = 3;
-/** 空間サイズ N の上限（SPEC.md 3.1）。 */
+/** 空間サイズ N の上限（RULES.md 3.1）。 */
 export const MAX_SPACE_SIZE = 7;
-/** 分割数 M の下限（SPEC.md 3.1）。 */
+/** 分割数 M の下限（RULES.md 3.1）。 */
 export const MIN_PIECE_COUNT = 2;
 
 // 未割り当てのボクセルを表す owner の値。
@@ -75,7 +75,7 @@ function assertSeed(seed: number): void {
 }
 
 /**
- * 空間サイズ N に対して選べる分割数 M の上限（SPEC.md 3.1）。
+ * 空間サイズ N に対して選べる分割数 M の上限（RULES.md 3.1）。
  *
  * M のプリセットは N から N−2 刻みの 5 段なので、上限はその最大値 N + 4(N−2) = 5N − 8
  * （N=3 → 7、N=4 → 12、N=5 → 17、N=6 → 22、N=7 → 27）。
@@ -109,7 +109,7 @@ function isInside(v: Vec3, n: number): boolean {
 }
 
 /**
- * 領域拡張で N×N×N を M 個の連結なピースに分割する（SPEC.md 3.2）。
+ * 領域拡張で N×N×N を M 個の連結なピースに分割する（RULES.md 3.2）。
  * 返す pieces は局所座標に正規化済みで、絶対座標（解答位置）は solution が持つ。
  */
 export function generatePuzzle(n: number, m: number, seed: number): GeneratedPuzzle {
@@ -178,7 +178,7 @@ export function generatePuzzle(n: number, m: number, seed: number): GeneratedPuz
     }
     if (grew) continue;
 
-    // すべてのピースがスキップになったのに空きが残る場合（SPEC.md 3.2-3 の孤立した空き）。
+    // すべてのピースがスキップになったのに空きが残る場合（RULES.md 3.2-3 の孤立した空き）。
     // 候補は吸収されるまで frontier に残る作りなので実際にはここへ来ないが、仕様どおり保険を置く。
     let remaining: number[] = [];
     for (let index = 0; index < total; index++) {
@@ -337,7 +337,7 @@ function scatterOnce(
 }
 
 /**
- * プレイ開始時の初期散らし（SPEC.md 3.2-5）。
+ * プレイ開始時の初期散らし（RULES.md 3.2-5）。
  * 各ピースにランダムな向き（24 通り）と、立方体の周囲 ±(N+2) 程度のランダムな位置を与える。
  * ピース同士は重ならない。同じ引数なら常に同じ配置になる。
  *

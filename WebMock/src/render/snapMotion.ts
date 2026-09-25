@@ -1,11 +1,11 @@
-// スナップの補間移動（SPEC.md 3.5）。
+// スナップの補間移動（RULES.md 3.5）。
 // 論理上の Placement は整数座標のまま先に確定させ、見た目だけを 100〜150 ms かけて追いつかせる。
 // こうするとクリア判定（src/core）が中間位置の影響を受けない。
 
 import type { Vec3 } from '../core/grid';
 import type { ViewOffset } from './pieces';
 
-/** 補間にかける時間（ms）。SPEC.md 3.5 の 100〜150 ms の中央付近。 */
+/** 補間にかける時間（ms）。RULES.md 3.5 の 100〜150 ms の中央付近。 */
 export const SNAP_DURATION_MS = 130;
 
 /** 表示上のずれの配り先。null は「ずれ無し（論理位置そのまま）」。 */

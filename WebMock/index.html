@@ -12,7 +12,7 @@
       html, body {
         margin: 0; height: 100%; overflow: hidden;
         background: #0b0f1a; color: #e8ecf5; font-family: system-ui, sans-serif;
-        /* iOS Safari 対策（SPEC.md 6 章）:
+        /* iOS Safari 対策（RULES.md 6 章）:
            長押しのコンテキストメニュー・テキスト選択・タップのハイライト・
            スクロールの連鎖（ページ全体のバウンド）を止める */
         -webkit-touch-callout: none;
@@ -28,7 +28,7 @@
       #ui { position: fixed; inset: 0; pointer-events: none; }
       #ui > * { pointer-events: auto; }
 
-      /* 3 画面で共通のボタン。指で押せるよう 44px 以上（SPEC.md 6 章） */
+      /* 3 画面で共通のボタン。指で押せるよう 44px 以上（RULES.md 6 章） */
       .ui-button {
         pointer-events: auto;
         box-sizing: border-box;
@@ -52,7 +52,7 @@
         background: rgba(96, 146, 224, 0.95); border-color: rgba(200, 226, 255, 0.8); font-weight: 600;
       }
 
-      /* プレイ中 HUD。スマホでは画面下部に寄せる（SPEC.md 6 章）。
+      /* プレイ中 HUD。スマホでは画面下部に寄せる（RULES.md 6 章）。
          帯そのものは入力を透かし、ボタンだけが拾う（帯の余白でカメラ操作が死なないように） */
       #ui > #hud {
         position: absolute; left: 0; right: 0; bottom: 0;

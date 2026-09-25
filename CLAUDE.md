@@ -5,12 +5,22 @@
 ## ディレクトリ構成
 
 ```
-CrystalAssemble.md    UE5 版（本番）のゲーム仕様書
-WebMock/              Web 版試作（TypeScript + Vite + Three.js）。詳細は WebMock/CLAUDE.md、仕様の正は WebMock/SPEC.md
+Docs/
+    RULES.md          ゲームルールの正（Web 版・UE 版で共通）
+    SPEC_UE.md        UE5 版（本番）の実装仕様。RULES.md をどこまで反映したかもここ
+    ORIGIN.md         最初の仕様書（UE5 モバイル版として書かれた原典。凍結）
+WebMock/              Web 版試作（TypeScript + Vite + Three.js）。詳細は WebMock/CLAUDE.md、実装仕様は WebMock/SPEC.md
 Auto_Tasks/           自動実装体制の作業フォルダ（git 管理外）
 ```
 
-ルートは将来 UE5 プロジェクトのルートになる（`.uproject` などはルート直下に置く）。
+ルートは将来 UE5 プロジェクトのルートになる（`CUBELITH.uproject` などはルート直下に置く）。
+
+## 仕様書の構成
+
+- **ルール**（プレイヤーから見える振る舞いと、同じシードで同じ結果を出すための決め事）は `Docs/RULES.md` だけに書く。**実装**（エンジンの機能への写像・マイルストーン・verify）は Web 版が `WebMock/SPEC.md`、UE 版が `Docs/SPEC_UE.md` に書く
+- 章番号は 3 つの文書で共通の番号体系（RULES.md が 1・2・3・5・6 章、実装仕様が 0・4・7〜10 章）。コード中の「RULES.md 3.3」「SPEC.md 4 章」はこの番号を指す
+- ルールや操作感の試行錯誤は **Web 版で先に行い**、確定したものを UE 版へ移す。ルールを変えるときは RULES.md と Web 版の実装を同じコミットで変え、RULES.md 末尾の変更履歴に R 番号付きで 1 行足す。UE 版は `Docs/SPEC_UE.md` の「反映済み」の R 番号からの差分を移植する（詳細は RULES.md「運用」）
+- 同じ条件とシードなら Web 版と UE 版で同じパズルを出す（RULES.md 3.6）。生成の細部は `WebMock/src/core` の実装が正
 
 ## リポジトリ
 
@@ -27,4 +37,6 @@ Auto_Tasks/           自動実装体制の作業フォルダ（git 管理外）
 
 ## 作業前に読むもの
 
-`WebMock/` 配下を触るタスク（要望の分解を含む）では **`WebMock/CLAUDE.md` を必ず読む**（コマンド・技術スタック・座標系・開発ルール・タスクの切り方がそこにある）。
+- `WebMock/` 配下を触るタスク（要望の分解を含む）では **`WebMock/CLAUDE.md` を必ず読む**（コマンド・技術スタック・座標系・開発ルール・タスクの切り方がそこにある）
+- ゲームのルールに関わるタスク（Web 版・UE 版とも）では **`Docs/RULES.md` を読む**
+- UE 版に関わるタスクでは `Docs/SPEC_UE.md` を読む（UE 用の CLAUDE.md は U0 で作る）

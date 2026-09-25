@@ -1,6 +1,6 @@
 // 内部発光コア（SPEC.md 4 章）。各ボクセルの中心に置く小さな発光メッシュを、
 // **全ピース分まとめて 1 つの InstancedMesh** で描く（ドローコールを増やさない）。
-// 平常時はピースごとに位相をずらしたサイン波で呼吸させ、クリア演出（SPEC.md 5.2-1）では
+// 平常時はピースごとに位相をずらしたサイン波で呼吸させ、クリア演出（RULES.md 5.2-1）では
 // 位相差を消して全ボクセルを連動させたまま最大まで上げる。
 
 import * as THREE from 'three';
@@ -39,7 +39,7 @@ export type GlowCores = {
   setBoost(amount: number): void;
   /**
    * ピースのコアを隠す / 戻す。固定中のピースはコアの代わりにロックアイコン（lockIcons）を出す。
-   * 隠したコアもクリア演出のブーストに合わせて光る（SPEC.md 5.2-1「全ボクセルが連動」を保つ）。
+   * 隠したコアもクリア演出のブーストに合わせて光る（RULES.md 5.2-1「全ボクセルが連動」を保つ）。
    */
   setHidden(pieceId: number, hidden: boolean): void;
   /** ジオメトリ / マテリアルを解放する。 */
@@ -128,7 +128,7 @@ export function createGlowCores(
     update(elapsedSeconds: number): void {
       for (const [pieceId, range] of ranges) {
         const breath = 0.5 + 0.5 * Math.sin(elapsedSeconds * BREATH_SPEED + range.phase);
-        // ブーストが上がるほど位相差が消え、全ボクセルが連動して最大へ向かう（SPEC.md 5.2-1）
+        // ブーストが上がるほど位相差が消え、全ボクセルが連動して最大へ向かう（RULES.md 5.2-1）
         const level = THREE.MathUtils.lerp(breath, 1, boost);
         // 隠したコアは平常時は 0（加算合成なので黒は見えない）で、ブーストに合わせて他へ追いつく
         const visibility = hiddenPieces.has(pieceId) ? boost : 1;

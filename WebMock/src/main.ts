@@ -44,7 +44,7 @@ import { createTitleScreen } from './ui/titleScreen';
 import type { Screen } from './ui/screens';
 
 /**
- * パズル 1 回分の条件（SPEC.md 3.1 の N / M / シード + 要望による「パズルの回転」）。
+ * パズル 1 回分の条件（RULES.md 3.1 の N / M / シード + 要望による「パズルの回転」）。
  *
  * 解釈: 回転の有無は URL クエリに足さない（要望に指定が無く、CLAUDE.md 開発ルール 6
  * 「仕様に無いことを足さない」に従う）。`?seed=` で盤面を再現しても、回転の有無は
@@ -75,7 +75,7 @@ type Session = {
 function initialSettings(query: ReturnType<typeof readAppParams>): Settings {
   const n = clampInt(query.n, MIN_SPACE_SIZE, MAX_SPACE_SIZE) ?? DEFAULT_SPACE_SIZE;
   const m = clampInt(query.m, MIN_PIECE_COUNT, maxPieces(n)) ?? DEFAULT_PIECE_COUNT;
-  // シードは SPEC.md 3.1 のとおり ?seed= で指定できる。無ければ毎回引き直す。
+  // シードは RULES.md 3.1 のとおり外から指定できる（Web では ?seed=。SPEC.md 7 章）。無ければ毎回引き直す。
   // 回転の有無はクエリに無いので既定（なし）から始める
   return { n, m, seed: query.seed ?? randomSeed(), allowRotation: DEFAULT_ALLOW_ROTATION };
 }
@@ -162,10 +162,10 @@ const lite = query.lite ?? preferLiteMode();
 
 const context = createRenderContext(container);
 const orbit = createOrbitCamera(context.camera, context.renderer.domElement);
-// マグネットスナップの SE（SPEC.md 3.5）。WebAudio の合成音なのでアプリ全体で 1 つでよい
+// マグネットスナップの SE（RULES.md 3.5）。WebAudio の合成音なのでアプリ全体で 1 つでよい
 const snapAudio = createSnapAudio();
 const screens = createScreenManager(ui);
-// 計測用（SPEC.md には無い開発用の道具）。?fps=1 のときだけ作る
+// 計測用（仕様書には無い開発用の道具）。?fps=1 のときだけ作る
 const fpsMeter: FpsMeter | null = query.fps ? createFpsMeter(ui) : null;
 
 // 自動再生制限があるので、最初のユーザー操作で AudioContext を作って resume する
@@ -200,7 +200,7 @@ function showTitle(settings: Settings): void {
   );
 }
 
-/** 生成 → 散らし → プレイ（SPEC.md 2 章 2 / 3）。 */
+/** 生成 → 散らし → プレイ（RULES.md 2 章 2 / 3）。 */
 function startSession(settings: Settings): void {
   disposeSession();
   const { n, m, seed, allowRotation } = settings;
@@ -225,12 +225,12 @@ function startSession(settings: Settings): void {
   let hud: Hud | null = null;
   let input: PieceInput | null = null;
   let finished = false;
-  // クリア演出（SPEC.md 5.2）。クリアするまでは null
+  // クリア演出（RULES.md 5.2）。クリアするまでは null
   let clearEffect: ClearEffect | null = null;
   /** 回転モードで表示だけをねじっているピース。ねじれたまま残さないよう必ずここで覚えておく。 */
   let freeRotated: number | null = null;
 
-  // 回転モード中だけ出す回転ギズモ（SPEC.md 3.3 の回転操作の見せ方）。
+  // 回転モード中だけ出す回転ギズモ（RULES.md 3.3 の回転操作の見せ方）。
   // 中身は 4 本の輪だけなので、セッション中は作りっぱなしにして表示だけを切り替える
   const gizmo = createRotationGizmo();
   context.scene.add(gizmo.object);
@@ -304,7 +304,7 @@ function startSession(settings: Settings): void {
     },
   });
 
-  /** クリア画面へ。以降ピースを動かせないよう入力を外す（SPEC.md 2 章 4 / 5）。 */
+  /** クリア画面へ。以降ピースを動かせないよう入力を外す（RULES.md 2 章 4 / 5）。 */
   const showClear = (): void => {
     if (finished) return;
     finished = true;
@@ -315,7 +315,7 @@ function startSession(settings: Settings): void {
     input?.dispose();
     input = null;
     hud = null;
-    // 演出中は操作を無効化する（SPEC.md 5.2-4）。カメラの自動旋回は enabled と独立に効く
+    // 演出中は操作を無効化する（RULES.md 5.2-4）。カメラの自動旋回は enabled と独立に効く
     orbit.enabled = false;
     // 完成した立方体を主役にするので、解答空間の枠は引っ込める
     frame.object.visible = false;
@@ -338,7 +338,7 @@ function startSession(settings: Settings): void {
         n,
         m,
         seed,
-        // 「もう一度」は同じ条件で再生成し、シードだけ引き直す（SPEC.md 2 章 5）
+        // 「もう一度」は同じ条件で再生成し、シードだけ引き直す（RULES.md 2 章 5）
         onRetry: (): void => {
           startSession({ n, m, seed: randomSeed(), allowRotation });
         },
@@ -349,7 +349,7 @@ function startSession(settings: Settings): void {
     );
   };
 
-  // 配置が変わるたびに描画・HUD・スナップ候補へ反映する（SPEC.md 3.4）
+  // 配置が変わるたびに描画・HUD・スナップ候補へ反映する（RULES.md 3.4）
   const game = createGame(puzzle.pieces, n, initial, (placements, solved): void => {
     pieceViews.updatePlacements(placements);
     hud?.setRemaining(unsettledPieceCount(puzzle.pieces, placements, n), total);
@@ -401,7 +401,7 @@ function startSession(settings: Settings): void {
       game.rotate(pieceId, axis, dir);
     },
     onRelease: (pieceId): void => {
-      // 手を離した瞬間に吸い付かせる（SPEC.md 3.5）
+      // 手を離した瞬間に吸い付かせる（RULES.md 3.5）
       snap.release(pieceId);
     },
     // 回転モードのドラッグ中。論理上の配置は変えず、表示だけを連続的に回す
@@ -410,7 +410,7 @@ function startSession(settings: Settings): void {
       pieceViews.setFreeRotation(pieceId, quaternion);
     },
     // 指を離したら最寄りの向き（24 通り）へスナップして確定させる。
-    // 解釈: ドラッグ中の表示は重心まわりに回すが、確定は SPEC.md 3.3 のとおり局所原点まわりの
+    // 解釈: ドラッグ中の表示は重心まわりに回すが、確定は RULES.md 3.3 のとおり局所原点まわりの
     // 回転（位置はそのまま向き id だけを差し替える）なので、確定の瞬間にピースが半マス前後
     // ずれて見えることがある。2 本指ジェスチャの 90 度回転と同じ動きに揃えている
     onFreeRotateEnd: (pieceId, quaternion): void => {
@@ -462,7 +462,7 @@ function startSession(settings: Settings): void {
   hud = screens.show('play', (host): Hud =>
     createHud(host, {
       onReset: (): void => {
-        // 同じ seed の散らし配置に戻す（SPEC.md 3.3「やり直し」）
+        // 同じ seed の散らし配置に戻す（RULES.md 3.3「やり直し」）
         exitRotateMode();
         input?.select(null);
         for (const piece of puzzle.pieces) snapMotion.cancel(piece.id);

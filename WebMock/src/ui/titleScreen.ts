@@ -1,4 +1,4 @@
-// タイトル / 難易度選択画面（SPEC.md 6 章）。N と M のプリセットを選んで「開始」。
+// タイトル / 難易度選択画面（RULES.md 6 章）。N と M のプリセットを選んで「開始」。
 // シードは小さく表示するだけで、ここでは変えない（タイトルへ来るたびに引き直す）。
 
 import { nearestPreset, piecePresets, spaceSizes } from './difficulty';

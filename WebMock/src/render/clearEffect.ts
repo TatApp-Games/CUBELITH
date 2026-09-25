@@ -1,4 +1,4 @@
-// クリア演出（SPEC.md 5.2）。クリア判定が真になった瞬間から 2〜3 秒で
+// クリア演出（RULES.md 5.2）。クリア判定が真になった瞬間から 2〜3 秒で
 // 「発光 → 融合 → パーティクル → カメラ旋回」をこの順に再生する。
 //
 // 進行はすべて経過時間（秒）で持つので、フレームレートが変わっても同じ長さで再生される。
@@ -16,13 +16,13 @@ const MERGE_END = 1.5;
 const PARTICLE_AT = 1.35;
 /** カメラの自動旋回を始める時刻（秒）。 */
 const CAMERA_AT = 1.7;
-/** 演出全体の長さ（秒）。SPEC.md 5.2 の「2〜3 秒」。 */
+/** 演出全体の長さ（秒）。RULES.md 5.2 の「2〜3 秒」。 */
 const TOTAL = 2.6;
 
 /** カメラの自動旋回の速さ（rad/s）。1 周およそ 18 秒の「ゆっくり」。 */
 const AUTO_ROTATE_SPEED = 0.35;
 
-/** 粒子の数（SPEC.md 5.2-3 の「数百〜千粒」）。 */
+/** 粒子の数（RULES.md 5.2-3 の「数百〜千粒」）。 */
 const PARTICLE_COUNT = 700;
 /** 粒子の寿命（秒）。 */
 const PARTICLE_LIFE = 1.4;
@@ -66,7 +66,7 @@ export type ClearEffect = {
 
 /**
  * 融合後の巨大クリスタル。
- * 解釈: transmission と transparent の併用は three では推奨されないが、SPEC.md 5.2-2 の
+ * 解釈: transmission と transparent の併用は three では推奨されないが、RULES.md 5.2-2 の
  * 「差し替えの瞬間が飛ばないようクロスフェードする」には opacity が要る。opacity を使うのは
  * 融合の 0.8 秒だけで、その間はピース本体も出ているため破綻しても目立たない。
  */
@@ -102,7 +102,7 @@ function createParticles(color: THREE.Color, n: number): Particles {
   const tint = color.clone().lerp(new THREE.Color(0xffffff), 0.6);
 
   for (let i = 0; i < PARTICLE_COUNT; i += 1) {
-    // 球面上の一様分布。中心から放射状に散らす（SPEC.md 5.2-3）
+    // 球面上の一様分布。中心から放射状に散らす（RULES.md 5.2-3）
     const u = Math.random() * 2 - 1;
     const theta = Math.random() * Math.PI * 2;
     const r = Math.sqrt(Math.max(1 - u * u, 0));

@@ -1,9 +1,9 @@
-// 難易度選択の選択肢（SPEC.md 3.1）。N は 3〜7、M は N ごとのプリセット。
+// 難易度選択の選択肢（RULES.md 3.1）。N は 3〜7、M は N ごとのプリセット。
 // 有効範囲の判断は core（maxPieces）に任せ、ここは「どう刻んで見せるか」だけを決める。
 
 import { MAX_SPACE_SIZE, MIN_PIECE_COUNT, MIN_SPACE_SIZE, maxPieces } from '../core/generate';
 
-/** SPEC.md 3.1 の既定（N=3 / M=4）。 */
+/** RULES.md 3.1 の既定（N=3 / M=4）。 */
 export const DEFAULT_SPACE_SIZE = 3;
 export const DEFAULT_PIECE_COUNT = 4;
 
@@ -13,7 +13,7 @@ export const DEFAULT_PIECE_COUNT = 4;
  */
 export const DEFAULT_ALLOW_ROTATION = false;
 
-/** M のプリセットの段数（SPEC.md 3.1）。 */
+/** M のプリセットの段数（RULES.md 3.1）。 */
 const PRESET_STEPS = 5;
 
 /** 選べる N の一覧（3..7）。 */
@@ -24,7 +24,7 @@ export function spaceSizes(): number[] {
 }
 
 /**
- * N に対する M のプリセット（SPEC.md 3.1）。
+ * N に対する M のプリセット（RULES.md 3.1）。
  *
  * N から maxPieces(n) までを PRESET_STEPS 段に等分する。刻みは N−2 になり、
  * N=3 → 3/4/5/6/7、N=4 → 4/6/8/10/12、N=5 → 5/8/11/14/17、N=6 → 6/10/14/18/22、N=7 → 7/12/17/22/27。
@@ -50,7 +50,7 @@ export function nearestPreset(presets: readonly number[], m: number): number {
   return best;
 }
 
-/** 新しい乱数シード（SPEC.md 3.1）。「もう一度」やタイトルへ戻るたびに引き直す。 */
+/** 新しい乱数シード（RULES.md 3.1）。「もう一度」やタイトルへ戻るたびに引き直す。 */
 export function randomSeed(): number {
   return Math.floor(Math.random() * 0x7fffffff);
 }

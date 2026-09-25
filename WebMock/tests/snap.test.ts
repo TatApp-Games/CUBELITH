@@ -69,7 +69,7 @@ function otherVoxels(
 }
 
 /**
- * 実装とは独立に SPEC.md 3.5 の 3 条件を素朴に判定する（テスト側の参照実装）。
+ * 実装とは独立に RULES.md 3.5 の 3 条件を素朴に判定する（テスト側の参照実装）。
  * 接する・重ならない・外接立方体が N×N×N に収まる。
  */
 function isValidPosition(

@@ -26,14 +26,14 @@ const VOXEL_SIZE = 0.96;
 
 /**
  * emissive にかける係数。通常時とハイライト時。
- * 解釈: SPEC.md 3.3 の「縁取りかハイライト」は、ポストプロセスを増やさない方針（CLAUDE.md 開発ルール 5）に
+ * 解釈: RULES.md 3.3 の「縁取りかハイライト」は、ポストプロセスを増やさない方針（CLAUDE.md 開発ルール 5）に
  * 合わせて emissive を上げる簡易ハイライトで表す。
  */
 const BASE_EMISSIVE = 0.12;
 const HIGHLIGHT_EMISSIVE = 0.85;
 
 /**
- * スナップ候補がある間の「薄く光る」状態（SPEC.md 5.1）。
+ * スナップ候補がある間の「薄く光る」状態（RULES.md 5.1）。
  * 解釈: 選択ハイライト（同じ色を濃くする）と見分けられるよう、色を白へ寄せて霞んだ発光にする。
  */
 const SNAP_HINT_EMISSIVE = 0.6;
@@ -41,7 +41,7 @@ const SNAP_HINT_WHITENESS = 0.75;
 const SNAP_HINT_TINT = new THREE.Color(0xffffff);
 
 /**
- * クリア演出で発光を最大まで上げたときの emissive 係数（SPEC.md 5.2-1）。
+ * クリア演出で発光を最大まで上げたときの emissive 係数（RULES.md 5.2-1）。
  * 内部コア（glowCores）と連動して、ピース本体そのものも明るくする。
  */
 const CLEAR_EMISSIVE = 1.8;
@@ -59,7 +59,7 @@ const UNIT_SCALE = new THREE.Vector3(1, 1, 1);
 export type PieceViews = {
   /** シーンに追加するルート。N×N×N の中心が原点に来るようオフセットしてある。 */
   readonly object: THREE.Group;
-  /** 全ピース色を混ぜた色。融合後の巨大クリスタルの色に使う（SPEC.md 5.2-2）。 */
+  /** 全ピース色を混ぜた色。融合後の巨大クリスタルの色に使う（RULES.md 5.2-2）。 */
   readonly blendedColor: THREE.Color;
   /** 配置を反映する。placements は全ピース分（順不同）。 */
   updatePlacements(placements: readonly Placement[]): void;
@@ -91,7 +91,7 @@ export type PieceViews = {
    * 位置は配置と一緒に書き直すので、動かせば追従する。
    */
   setLockIcon(pieceId: number, kind: LockIconKind | null): void;
-  /** ピース群（本体 + コア）の表示。融合演出（SPEC.md 5.2-2）で false にする。 */
+  /** ピース群（本体 + コア）の表示。融合演出（RULES.md 5.2-2）で false にする。 */
   setPiecesVisible(visible: boolean): void;
   /** ジオメトリ / マテリアルを解放する。 */
   dispose(): void;
@@ -221,7 +221,7 @@ export function createPieceViews(
   const lockIcons = createLockIcons(pieces);
   object.add(lockIcons.object);
 
-  // 融合後の巨大クリスタルの色（SPEC.md 5.2-2）。全ピース色の平均。
+  // 融合後の巨大クリスタルの色（RULES.md 5.2-2）。全ピース色の平均。
   // 色相を等間隔に散らしてあるので単純平均だと灰色に寄る。彩度と明度は下限を入れて持ち上げる
   const blendedColor = new THREE.Color(0x8fd3ff);
   if (colorById.size > 0) {

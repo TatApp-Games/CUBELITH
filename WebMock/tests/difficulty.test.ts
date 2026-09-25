@@ -1,11 +1,11 @@
-// 難易度の選択肢（src/ui/difficulty.ts）。N ごとの M のプリセットが SPEC.md 3.1 の表どおりかを確かめる。
+// 難易度の選択肢（src/ui/difficulty.ts）。N ごとの M のプリセットが RULES.md 3.1 の表どおりかを確かめる。
 
 import { describe, expect, it } from 'vitest';
 import { maxPieces } from '../src/core/generate';
 import { DEFAULT_PIECE_COUNT, DEFAULT_SPACE_SIZE, nearestPreset, piecePresets, spaceSizes } from '../src/ui/difficulty';
 
 describe('piecePresets', () => {
-  it('SPEC.md 3.1 の表に一致する', () => {
+  it('RULES.md 3.1 の表に一致する', () => {
     expect(piecePresets(3)).toEqual([3, 4, 5, 6, 7]);
     expect(piecePresets(4)).toEqual([4, 6, 8, 10, 12]);
     expect(piecePresets(5)).toEqual([5, 8, 11, 14, 17]);

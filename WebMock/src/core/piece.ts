@@ -1,4 +1,4 @@
-// ピースの表現と、配置（向き + 位置）からワールド座標への変換（SPEC.md 3.2 / 3.4）。
+// ピースの表現と、配置（向き + 位置）からワールド座標への変換（RULES.md 3.2 / 3.4）。
 // Three.js に依存しない純粋なロジック。
 
 import { addVec3, compareVec3, rotateVoxel, subVec3, vec3, type Vec3 } from './grid';
@@ -21,7 +21,7 @@ const DISTANCE_EPSILON = 1e-9;
 
 /**
  * 局所原点にするボクセルを返す。
- * 解釈: SPEC.md 3.3 は「最初のボクセル、または重心に最も近いボクセル」と選択肢を示しているが、
+ * 解釈: RULES.md 3.3 は「最初のボクセル、または重心に最も近いボクセル」と選択肢を示しているが、
  * 回転しても見た目の中心がずれにくい後者を採る。同点のときは座標の辞書順で最小のものを選び決定的にする。
  */
 export function localOrigin(voxels: readonly Vec3[]): Vec3 {
@@ -83,7 +83,7 @@ export function placedVoxels(piece: Piece, placement: Placement): Vec3[] {
   return piece.voxels.map((v) => addVec3(rotateVoxel(v, placement.orientation), placement.position));
 }
 
-/** ボクセル集合の外接ボックス。クリア判定（SPEC.md 3.4）で使う。 */
+/** ボクセル集合の外接ボックス。クリア判定（RULES.md 3.4）で使う。 */
 export function boundingBox(voxels: readonly Vec3[]): BoundingBox {
   const first = voxels[0];
   if (first === undefined) throw new RangeError('boundingBox: ボクセル集合が空');

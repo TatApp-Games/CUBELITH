@@ -1,4 +1,4 @@
-// 画面遷移（SPEC.md 2 章 / 6 章）。title（難易度選択）→ play → clear の 3 状態だけを持つ。
+// 画面遷移（RULES.md 2 章 / 6 章）。title（難易度選択）→ play → clear の 3 状態だけを持つ。
 // DOM とイベントリスナが積み上がらないよう、切り替えのたびに前の画面を必ず dispose する。
 
 /** 1 画面。生成と破棄を対にする。 */
@@ -8,7 +8,7 @@ export type Screen = {
   dispose(): void;
 };
 
-/** 画面の名前。SPEC.md 2 章のコアゲームループに対応する。 */
+/** 画面の名前。RULES.md 2 章のコアゲームループに対応する。 */
 export type ScreenName = 'title' | 'play' | 'clear';
 
 export type ScreenManager = {

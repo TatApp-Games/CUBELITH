@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.0.1",
   "type": "module",
-  "description": "CUBELITH の Web 版試作。仕様は SPEC.md",
+  "description": "CUBELITH の Web 版試作。ルールは ../Docs/RULES.md、実装仕様は SPEC.md",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",

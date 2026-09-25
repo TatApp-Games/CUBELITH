@@ -1,4 +1,4 @@
-// ゲーム状態の集約（SPEC.md 3.3 / 3.4）。現在の配置を持ち、変更のたびにクリア判定を回す。
+// ゲーム状態の集約（RULES.md 3.3 / 3.4）。現在の配置を持ち、変更のたびにクリア判定を回す。
 // Three.js に依存しない純粋なロジック。描画への反映は onChange のコールバックで外へ出す。
 
 import { addVec3, orientationMatrix, rotateOrientation, type Axis, type Vec3 } from './grid';
@@ -17,7 +17,7 @@ export function movePlacement(placement: Placement, delta: Vec3): Placement {
 /**
  * 軸まわりに 90 度回した新しい配置。
  * position はピースの局所原点のワールド座標なので、向き id を差し替えるだけで
- * 「局所原点を中心に回す」（SPEC.md 3.3）になる。
+ * 「局所原点を中心に回す」（RULES.md 3.3）になる。
  */
 export function rotatePlacement(placement: Placement, axis: Axis, dir: 1 | -1): Placement {
   return {
@@ -81,7 +81,7 @@ export type Game = {
 
 /**
  * ゲーム状態を作る。
- * 更新のたびに `isSolved` を呼ぶ（SPEC.md 3.4「判定はピースを動かすたびに実行」）。
+ * 更新のたびに `isSolved` を呼ぶ（RULES.md 3.4「判定はピースを動かすたびに実行」）。
  * onChange は構築時には呼ばない。初回の描画は呼び出し側が placements() から行う。
  */
 export function createGame(

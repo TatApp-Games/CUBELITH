@@ -1,4 +1,4 @@
-// 手を離したときのマグネットスナップ（SPEC.md 3.5 / 5.1）。
+// 手を離したときのマグネットスナップ（RULES.md 3.5 / 5.1）。
 // 候補を求めるのは core の純粋関数 snapCandidate。ここは「いつ呼ぶか」と結果の配り先だけを持つ。
 
 import { equalsVec3 } from '../core/grid';
