@@ -1,6 +1,6 @@
 # GEODIA / Crystal Assemble
 
-プロシージャル 3D 組み立てパズル。**この CLAUDE.md はリポジトリ全体の入口**で、各サブプロジェクトの詳細はそれぞれの `CLAUDE.md` に置く。
+プロシージャル 3D 組み立てパズル。**この CLAUDE.md はリポジトリ全体の入口**で、各サブプロジェクトの詳細（コマンド・開発ルール・タスクの切り方）はそれぞれの `CLAUDE.md` に置く。ルートには特定のサブプロジェクト専用のファイル（`package.json` など）を置かない。
 
 ## ディレクトリ構成
 
@@ -10,7 +10,7 @@ WebMock/              Web 版試作（TypeScript + Vite + Three.js）。詳細�
 Auto_Tasks/           自動実装体制の作業フォルダ（git 管理外）
 ```
 
-UE5 プロジェクトを作るときはルート直下に置く。
+ルートは将来 UE5 プロジェクトのルートになる（`.uproject` などはルート直下に置く）。
 
 ## リポジトリ
 
@@ -18,28 +18,13 @@ UE5 プロジェクトを作るときはルート直下に置く。
 - ブランチは `develop`（作業）と `main`（人が確認してマージ）。リモートは `origin`（TatApp-Games/CrystalAssemble）
 - 統合前（2026-09-21 以前）の `WebMock/` のファイル別履歴は**旧パス**で引く（例: `git log --full-history -- src/core/grid.ts`）。`git blame WebMock/src/core/grid.ts` は旧パスまで遡るのでそのまま使える
 
-## コマンド
-
-ルートから打つ。実体は `WebMock/` に委譲される（ルートの `package.json` は委譲のみで依存を持たない）。
-
-```
-npm run setup      WebMock の依存を導入（初回）
-npm run dev        開発サーバ（http://localhost:5173）
-npm test           Vitest を 1 回実行（watch なし）
-npm run build      型チェック（tsc --noEmit）+ 本番ビルド（WebMock/dist/）
-```
-
 ## 進め方（Auto_Tasks による自動実装）
 
 - 要望駆動の新運用で開発する。人は要望をテキストにして `Auto_Tasks/00_要望/` に置く（または `/auto-tasks-request`）。運用の詳細は `Utility/自動化運用/Auto_Tasks運用ガイド.md`
 - **watch はこのルートで回す**（`Auto_Tasks/` はルート直下、git 管理外）。元ブランチは `develop`。`main` の上で watch を回さない
-- Web 試作の要望は `WebMock/SPEC.md` が仕様の正。仕様全体を指す要望は SPEC.md 8 章のマイルストーン順（M1 → M2 → …）に切り、1 タスクは 1 マイルストーン以下の粒度にする
-- **scope はルートからの相対パスで書く**。`WebMock/` を前置きすること（例: `WebMock/src/core/,WebMock/tests/`）
-  - core の作業: `WebMock/src/core/,WebMock/tests/`
-  - 描画: `WebMock/src/render/,WebMock/src/main.ts`
-  - UI: `WebMock/src/ui/,WebMock/index.html`
-- verify はルートから `npm test`（core の変更）または `npm run build`（描画・UI の変更）。見た目・手触りは verify 省略で人が確認する
+- scope はルートからの相対パスで書き、verify はルートで実行される前提で書く
+- サブプロジェクトの要望の切り方・scope・verify の具体例は、そのサブプロジェクトの `CLAUDE.md` の「進め方」節に従う
 
 ## 作業前に読むもの
 
-`WebMock/` 配下を触るタスクでは **`WebMock/CLAUDE.md` を必ず読む**（技術スタック・座標系・開発ルールがそこにある）。
+`WebMock/` 配下を触るタスク（要望の分解を含む）では **`WebMock/CLAUDE.md` を必ず読む**（コマンド・技術スタック・座標系・開発ルール・タスクの切り方がそこにある）。

@@ -1,10 +1,7 @@
 # Auto_Tasks 自動実装体制の作業フォルダ（git 管理外）
 Auto_Tasks/
 
-# Node
-node_modules/
-dist/
-.vite/
+# Node 関連は WebMock/.gitignore で除外する（ルートは将来 UE5 プロジェクトになる）
 
 # その他
 *.log

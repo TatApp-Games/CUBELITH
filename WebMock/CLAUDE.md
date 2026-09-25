@@ -10,7 +10,7 @@
 
 ## コマンド
 
-実行はこのディレクトリで。リポジトリルートからも同名の `npm test` / `npm run build` / `npm run dev` が委譲される（ルートの `package.json`）。
+実行はこのディレクトリ（`WebMock/`）で。リポジトリルートには `package.json` を置かない（ルートは将来 UE5 プロジェクトになるため）。ルートから打つ場合は `npm --prefix WebMock <スクリプト>` の形にする（例: `npm --prefix WebMock test`）。
 
 ```
 npm install        依存の導入（初回）
@@ -57,6 +57,6 @@ tests/        Vitest。core の全公開関数にテストを付ける
 
 - git リポジトリと `Auto_Tasks/` は**リポジトリルート（`WebMock/` の親）**にある。watch はルートで回す。運用の詳細はルートの `CLAUDE.md` と `Utility/自動化運用/Auto_Tasks運用ガイド.md`
 - 要望は「SPEC.md の内容で Web モックを作成して」のように仕様全体を指してよい。その場合、分解は **`SPEC.md` 8 章のマイルストーン順（M1 → M2 → …）にタスクを切る**。M0（雛形）は準備済み。1 タスクは 1 マイルストーン以下の粒度にする
-- タスクの verify は**ルートから** `npm test`（core の変更）または `npm run build`（描画・UI の変更）。見た目・手触りは verify 省略で人が確認する
+- タスクの verify はルートで実行されるので **`npm --prefix WebMock test`**（core の変更）または **`npm --prefix WebMock run build`**（描画・UI の変更）と書く。素の `npm test` はルートに `package.json` が無いため失敗する。見た目・手触りは verify 省略で人が確認する
 - **scope はルートからの相対パスで書き、`WebMock/` を前置きする**。core の作業は `WebMock/src/core/,WebMock/tests/`、描画は `WebMock/src/render/,WebMock/src/main.ts`、UI は `WebMock/src/ui/,WebMock/index.html`
 - watch の元ブランチは `develop`。`main` の上で watch を回さない（常時マージのため）。`main` へは人が確認してからマージする
