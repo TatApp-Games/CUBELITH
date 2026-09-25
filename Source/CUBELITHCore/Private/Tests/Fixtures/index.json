@@ -1,0 +1,174 @@
+{
+  "formatVersion": 1,
+  "generator": "WebMock/scripts/exportFixtures.ts",
+  "orientationCount": 24,
+  "puzzleSeeds": [
+    1,
+    20260926,
+    4294967295
+  ],
+  "rngSeeds": [
+    0,
+    1,
+    20260926,
+    4294967295
+  ],
+  "rngStreamLength": 64,
+  "hintCount": 2,
+  "files": [
+    "orientations.json",
+    "puzzle_n3_m3.json",
+    "puzzle_n3_m4.json",
+    "puzzle_n3_m5.json",
+    "puzzle_n3_m6.json",
+    "puzzle_n3_m7.json",
+    "puzzle_n4_m10.json",
+    "puzzle_n4_m12.json",
+    "puzzle_n4_m4.json",
+    "puzzle_n4_m6.json",
+    "puzzle_n4_m8.json",
+    "puzzle_n5_m11.json",
+    "puzzle_n5_m14.json",
+    "puzzle_n5_m17.json",
+    "puzzle_n5_m5.json",
+    "puzzle_n5_m8.json",
+    "puzzle_n6_m10.json",
+    "puzzle_n6_m14.json",
+    "puzzle_n6_m18.json",
+    "puzzle_n6_m22.json",
+    "puzzle_n6_m6.json",
+    "puzzle_n7_m12.json",
+    "puzzle_n7_m17.json",
+    "puzzle_n7_m22.json",
+    "puzzle_n7_m27.json",
+    "puzzle_n7_m7.json",
+    "rng.json"
+  ],
+  "combinations": [
+    {
+      "n": 3,
+      "m": 3,
+      "file": "puzzle_n3_m3.json"
+    },
+    {
+      "n": 3,
+      "m": 4,
+      "file": "puzzle_n3_m4.json"
+    },
+    {
+      "n": 3,
+      "m": 5,
+      "file": "puzzle_n3_m5.json"
+    },
+    {
+      "n": 3,
+      "m": 6,
+      "file": "puzzle_n3_m6.json"
+    },
+    {
+      "n": 3,
+      "m": 7,
+      "file": "puzzle_n3_m7.json"
+    },
+    {
+      "n": 4,
+      "m": 4,
+      "file": "puzzle_n4_m4.json"
+    },
+    {
+      "n": 4,
+      "m": 6,
+      "file": "puzzle_n4_m6.json"
+    },
+    {
+      "n": 4,
+      "m": 8,
+      "file": "puzzle_n4_m8.json"
+    },
+    {
+      "n": 4,
+      "m": 10,
+      "file": "puzzle_n4_m10.json"
+    },
+    {
+      "n": 4,
+      "m": 12,
+      "file": "puzzle_n4_m12.json"
+    },
+    {
+      "n": 5,
+      "m": 5,
+      "file": "puzzle_n5_m5.json"
+    },
+    {
+      "n": 5,
+      "m": 8,
+      "file": "puzzle_n5_m8.json"
+    },
+    {
+      "n": 5,
+      "m": 11,
+      "file": "puzzle_n5_m11.json"
+    },
+    {
+      "n": 5,
+      "m": 14,
+      "file": "puzzle_n5_m14.json"
+    },
+    {
+      "n": 5,
+      "m": 17,
+      "file": "puzzle_n5_m17.json"
+    },
+    {
+      "n": 6,
+      "m": 6,
+      "file": "puzzle_n6_m6.json"
+    },
+    {
+      "n": 6,
+      "m": 10,
+      "file": "puzzle_n6_m10.json"
+    },
+    {
+      "n": 6,
+      "m": 14,
+      "file": "puzzle_n6_m14.json"
+    },
+    {
+      "n": 6,
+      "m": 18,
+      "file": "puzzle_n6_m18.json"
+    },
+    {
+      "n": 6,
+      "m": 22,
+      "file": "puzzle_n6_m22.json"
+    },
+    {
+      "n": 7,
+      "m": 7,
+      "file": "puzzle_n7_m7.json"
+    },
+    {
+      "n": 7,
+      "m": 12,
+      "file": "puzzle_n7_m12.json"
+    },
+    {
+      "n": 7,
+      "m": 17,
+      "file": "puzzle_n7_m17.json"
+    },
+    {
+      "n": 7,
+      "m": 22,
+      "file": "puzzle_n7_m22.json"
+    },
+    {
+      "n": 7,
+      "m": 27,
+      "file": "puzzle_n7_m27.json"
+    }
+  ]
+}
