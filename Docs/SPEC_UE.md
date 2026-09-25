@@ -1,6 +1,6 @@
 # CUBELITH — UE 版 実装仕様
 
-ステータス: 骨子（2026-09-25）。「案」「未定」の箇所は U0 の着手前に詰める。
+ステータス: U0 の着手前に決めることを反映（2026-09-26）。残る「未定」は 4 章（対象端末・鍵アイコン）と 10 章。
 
 - **ゲームルールの正は `RULES.md`**（Web 版・UE 版で共通）。この文書は「それを UE5 でどう実装するか」の正
 - 章番号は RULES.md と共通の番号体系。この文書は 0・4・7〜10 章を持ち、1・2・3・5・6 章（ルール）は RULES.md にある
@@ -19,14 +19,17 @@
 | 項目 | 内容 |
 |---|---|
 | プラットフォーム | iOS / Android（UE5 モバイルレンダラー）。開発中の実機確認は Android から（iOS のビルドには Mac が要る） |
-| エンジン | UE 5.8.1（`C:\UE_5.8.1` にソースビルド） |
+| エンジン | UE 5.8（Launcher 版。2026-09 時点で 5.8.3）。`.uproject` の `EngineAssociation` は `"5.8"` |
 | プロジェクト名 | CUBELITH（`CUBELITH.uproject`） |
+| パッケージ名 | `com.tatapp.cubelith`（Android の package 名と iOS の Bundle ID で共通。ストアに公開した後は変えられない） |
+| 画面の向き | 縦固定（Portrait） |
+| Android | 最低 API 26（Android 8.0。UE 5.8 が対応する下限）。64 bit Arm のみ。Target SDK はエンジンの推奨（UE 5.8 は 35）に合わせ、ストアに出す前に Google Play の要件を確かめる |
 
 ## 4. 描画と演出の実装（UE への写像）
 
 | ルール / WebMock の該当箇所 | UE 版の実装手段（案） | 担当 |
 |---|---|---|
-| ピースの描画（`src/render/pieces.ts`） | 1 ピース = 1 `UInstancedStaticMeshComponent`（原典 4.1） | AI |
+| ピースの描画（`src/render/pieces.ts`） | 1 ピース = 1 `UInstancedStaticMeshComponent`（原典 4.1）。ボクセルの位置は 7.2 の変換で UE の座標へ直す | AI |
 | すりガラス（原典 4.2） | 半透明マテリアル（Roughness 高め）+ Fake 屈折 | 人 |
 | 内部発光コア（`src/render/glowCores.ts`） | Emissive をサイン波で明滅させるマテリアル。ピースごとの位相はインスタンスごとの値（Per-Instance Custom Data）で渡す | 人（値の受け渡しは AI） |
 | 選択・スナップ候補の発光（RULES.md 3.3 / 5.1） | マテリアルのパラメータ | 人と AI |
@@ -35,40 +38,80 @@
 | 入力（`src/input/`） | Enhanced Input（タッチとマウス）+ ライントレースでピースを選ぶ。純粋関数（`axisMapping` / `twoFingerGesture` など）はテストごと C++ へ移す | AI（感度の調整は人） |
 | スナップの効果音（RULES.md 3.5） | MetaSounds | 人 |
 | クリア演出（RULES.md 5.2） | 発光は Material Parameter Collection、パーティクルは Niagara（原典 5.2）、カメラの旋回は C++ | 人と AI |
-| UI（RULES.md 6 章） | UMG。C++ の基底クラス（`BindWidget`）と、人が作るレイアウト | 人と AI |
+| UI（RULES.md 6 章） | UMG。C++ の基底クラス（`BindWidget`）と、人が作るレイアウト。縦持ちの画面に合わせる | 人と AI |
+| セーブ（10 章） | `USaveGame` を `UGameplayStatics::SaveGameToSlot` で保存する。盤面が変わるたびと、アプリがバックグラウンドに入るとき（`FCoreDelegates` のアプリのライフサイクルの通知）に書く。モバイルでは裏に回ったアプリが OS に終了させられることがあるため | AI |
 | ライティング（原典 4.1） | ディレクショナルライト 1 灯 + HDRI | 人 |
 
 - 目標フレームレート: 実機で 30 fps 以上（N=7 / M=27 でも）。対象端末は未定
 - **早めに実機で確かめること**（U1 と並行して人が進める）: すりガラスの見た目と負荷、半透明の ISM でインスタンス同士の前後関係が崩れないか（インスタンス単位では並び替えられない）、Fake 屈折がモバイルで成り立つか
 
-## 7. 技術構成（案。U0 で確定する）
+## 7. 技術構成
+
+コマンドの細部は U0 で試して、UE 用の CLAUDE.md に書く。
 
 ```
 CUBELITH.uproject
 Config/
-Content/                  人が作るアセット（Git LFS）
+Content/                  人が作るアセット
 Source/
-    CUBELITH/             ゲーム本体（描画・入力・UI の C++）
+    CUBELITH/             ゲーム本体（描画・入力・UI・セーブの C++）
     CUBELITHCore/         ゲームロジック（RULES.md 3 章）。WebMock の src/core に対応し、描画に依存しない
+        Private/Tests/    Automation Test と照合データ（Fixtures/）
 Docs/                     RULES.md / SPEC_UE.md / ORIGIN.md
 WebMock/                  Web 版（参照実装と照合データの出どころ）
 ```
 
-- ゲームロジックは UE の Automation Test で保証する。WebMock の `tests/` を移植する
-- 照合データ（RULES.md 3.6）: WebMock に書き出しの仕組みを足し、出力（JSON）を UE 側に置く。「生成への影響」がある R を反映するときに作り直す
-- `.uasset` / `.umap` は Git LFS で管理する。`Binaries/`・`Intermediate/`・`Saved/`・`DerivedDataCache/` などは git 管理外
-- ビルドとテストはコマンドラインで実行でき、Auto_Tasks の verify に使える形にする（具体的なコマンドは U0 で決め、UE 用の CLAUDE.md に書く）
-- 気を付けること: エディタが開いていて Live Coding が有効だと、コマンドラインのビルドは通らない。watch がブランチを切り替えると、エディタで開いているアセットとぶつかる。watch 用の作業ツリーを分けるか（`git worktree` など）を U0 で決める
+### 7.1 モジュール
+
+- `CUBELITHCore` が依存してよいのは `Core` モジュールだけ（`CoreUObject`・`Engine` を使わない。UObject と `UPROPERTY` を持たない）。例外は照合データを読むための `Json`（テストのコードからだけ使う）。WebMock の「`src/core` は Three.js に依存しない」と同じ決まり
+- `CUBELITHCore` のファイルは WebMock の `src/core` と 1 対 1 に対応させる（`grid.ts` → `Grid.h` / `Grid.cpp`）。関数名も揃え、移植元を追えるようにする
+- `CUBELITH` は `CUBELITHCore` に依存する。人が調整する値（`UPROPERTY`）・アクタ・ウィジェットの基底クラスはこちらに置く
+- 同じ結果を出すための注意（RULES.md 3.6）:
+  - mulberry32 は `uint32` で計算し、[0, 1) への変換は `double` で行う（JS の number は倍精度）
+  - JS の `Map` / `Set` は入れた順に回るが、`TMap` / `TSet` は順序が保証されない。順序が結果に効くところは `TArray` で持つ
+  - JS の `Array.prototype.sort` は安定ソート。移植では `Algo::StableSort` を使う
+
+### 7.2 座標系
+
+- ロジック（`CUBELITHCore`）は Web 版と同じ座標で持つ。ボクセルは整数座標 (x, y, z) で Y が上、向きは 0..23 の id（表も合成の順も `WebMock/src/core/grid.ts` と同じ）。照合データはそのまま比べられる
+- UE の座標（Z が上・左手系・cm）へは描画のときだけ変換する。UE の (X, Y, Z) = (x, z, y) × ボクセルの大きさ。y と z を入れ替えると右手系の Y-up が左手系の Z-up に写り、形は鏡像にならない
+- 向き（回転行列 R）を UE の回転に直すときも同じ入れ替え P を使う（R_UE = P · R · P）
+- ボクセルの大きさは 100 cm（UE の標準の立方体と同じ）
+
+### 7.3 テストと照合データ
+
+- ゲームロジックは UE の Automation Test で保証する。WebMock の `tests/` を移植する。テストはエディタのコマンドライン（`UnrealEditor-Cmd.exe` を `-nullrhi` などで起動）で回す。Launcher 版のエンジンでそのまま使える
+- 照合データ（RULES.md 3.6）: WebMock に書き出しの仕組みを足し（Web 版への要望にする）、出力（JSON）を `Source/CUBELITHCore/Private/Tests/Fixtures/` に置く
+  - 対象: N と M のプリセット 25 通り × パズルの回転 2 通り × シード数個
+  - 中身: 生成したピース（id と解答のボクセル）、初期散らし（ピースごとの位置と向き）、散らし直し（ヒントの固定があるとき・ないとき）。加えて向きの表（24 通り）と、いくつかのシードでの乱数の出力列
+  - 生成の途中ではなく結果全体を比べる。「生成への影響」がある R を反映するときに作り直す
+
+### 7.4 リポジトリ
+
+- Git LFS は使わない。`.uasset` / `.umap` も普通の git で管理し、`.gitattributes` で `binary` を付ける（改行の変換と差分・マージをさせない）
+- バイナリは変更のたびに丸ごと履歴に残り、リポジトリが太り続ける。そのため:
+  - 1 ファイル 50 MB 未満に抑える（GitHub は 50 MB で警告し、100 MB を超えると push を拒否する）
+  - HDRI は 2K 程度にする。元素材（`.exr`・`.psd`・録音した `.wav` の原本など）はリポジトリに入れない
+  - アセットは意味のある変更のときだけ保存・コミットする
+- `Binaries/`・`Intermediate/`・`Saved/`・`DerivedDataCache/`・`.vs/`・生成されるソリューションファイルなどは git 管理外
+
+### 7.5 watch の作業ツリー
+
+- watch はルートとは別の作業ツリー（`git worktree`。`E:\Projects\TatApp\CUBELITH-watch`）で回す。人はルートの作業ツリーでエディタを開く
+  - 理由: エディタが開いていて Live Coding が有効だと、同じプロジェクトのコマンドラインのビルドが通らない。watch がブランチを切り替えると、エディタで開いているアセットとぶつかる
+- 同じブランチは 2 つの作業ツリーで同時に checkout できない。watch の作業ツリーが `develop` を持ち、人の作業ツリーは別のブランチで作業して `develop` と取り込み合う。手順は U0 で試して、UE 用の CLAUDE.md とルートの CLAUDE.md（「watch はこのルートで回す」）を書き換える
+- `Auto_Tasks/` は watch の作業ツリーに置く。`Binaries/`・`Intermediate/` は作業ツリーごとに持つ
+- verify のタイムアウトは watch.ps1 の既定 30 分。エンジンはビルド済みで、ビルドするのはプロジェクトのモジュールだけなので、この範囲に収まる見込み
 
 ## 8. 実装の段階（マイルストーン）
 
 | 段階 | 内容 | 担当 | 完了の目安 |
 |---|---|---|---|
-| U0 | 雛形: エンジンのビルド、`.uproject` と C++ モジュール・テスト、`.gitignore` / `.gitattributes`（LFS）、UE 用の CLAUDE.md（コマンド・開発ルール・タスクの切り方） | 人と AI | コマンドラインでビルドとテストが通る |
+| U0 | 雛形: `.uproject` と C++ モジュール 2 つ（7.1）・テスト、`.gitignore` / `.gitattributes`（7.4）、watch の作業ツリー（7.5）、UE 用の CLAUDE.md（コマンド・開発ルール・タスクの切り方） | 人と AI | コマンドラインでビルドとテストが通る |
 | U1 | ゲームロジックの移植: RULES.md 3 章（グリッド・向き・乱数・生成・散らし・クリア判定・スナップ・固定とヒント）+ テスト + 照合データ | AI | テストが通り、照合データと一致する |
 | U2 | 描画: ピースを ISM で表示、散らばった初期配置、軌道カメラ（マテリアルは仮） | AI | 生成結果が見える |
 | U3 | 操作: 選択・グリッド移動・90 度回転・クリア検知（演出なし） | AI | 手でクリアできる |
-| U4 | 手触り: スナップと効果音、HUD、難易度選択、固定・ヒント・次の問題 | AI と人 | 一通り遊べる |
+| U4 | 手触り: スナップと効果音、HUD、難易度選択、固定・ヒント・次の問題、セーブ（10 章） | AI と人 | 一通り遊べる |
 | U5 | 演出と質感: クリア時の発光・融合・パーティクル・カメラ旋回、すりガラス | 人と AI | 見せられる |
 | U6 | 最適化とモバイル: 実機で目標の fps、タッチ操作の調整 | 人と AI | 実機で遊べる |
 
@@ -78,6 +121,10 @@ WebMock/                  Web 版（参照実装と照合データの出どこ�
 - ゲームロジック: `../WebMock/SPEC.md` 9 章と同じ性質（生成の網羅・連結、判定、向き）を満たし、照合データと一致すること
 - 見た目・手触りは機械判定できないので、人が実機で確認する
 
-## 10. スコープ外
+## 10. スコープ（初回リリース）
 
-- 未定。セーブデータ・ランキング・課金・ストア配信の扱いは U0 の着手前に決める
+- 入れる: セーブ。ルールなので Web 版で先に作り、RULES.md に R 番号付きで書く（まだ書いていない）。2026-09-26 に決めたこと:
+  - 選んだ難易度・プレイ途中の盤面・これまでのクリア回数を保存する
+  - クリア回数は合計と難易度（N・M・パズルの回転）ごとに数え、タイトル画面に合計と選んでいる難易度での回数を出す
+  - 途中の盤面があれば、タイトル画面に「続きから」とその難易度・残りピース数を出す。新しく始めると途中の盤面は確認なしで上書きする
+- 未定: ランキング・課金・広告、対応する言語、iOS に取りかかる時期、ストアに出す時期
