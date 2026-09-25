@@ -1,7 +1,8 @@
 // ポインタ / タッチ入力をピース操作に変換する（SPEC.md 3.3）。
 // クリック / タップで選択、ドラッグでボクセル単位の移動、ホイールで奥行き移動、
 // 2 本指で 90 度回転とピンチズーム。
-// 選択中はカメラの旋回を止め、非選択時のドラッグはカメラに任せる（排他）。
+// ピースを押したドラッグはピース操作、何も無い場所から始めたドラッグは（選択中でも）カメラの旋回。
+// 何も無い場所を押しても選択は外さない（外れるのは散らし直すなど外からの select(null) だけ）。
 //
 // 回転モード（setRotateMode）の間だけ、選択中のピースへのドラッグは移動ではなく連続回転になる。
 // 90 度単位に縛らずに回して見せ（onFreeRotate）、指を離した時点で最寄りの向きへ確定させる
@@ -74,7 +75,9 @@ export type PieceInputOptions = {
   readonly camera: THREE.PerspectiveCamera;
   /** ピースの InstancedMesh を子に持つルート（レイキャストの対象）。 */
   readonly root: THREE.Object3D;
-  /** 選択中はカメラを止めるために触る。 */
+  /**
+   * 選択中はカメラを止めるために触る。何も無い場所から始めたドラッグの間だけ、選択中でも効かせる。
+   */
   readonly orbit: OrbitCamera;
   /**
    * パズルの回転が「あり」なら true（省略時は true）。false のときは 2 本指の 90 度回転を行わず、
@@ -261,6 +264,11 @@ export function createPieceInput(options: PieceInputOptions): PieceInput {
    * 2 本指の操作は指が 1 本ずつ離れるので、1 本目が離れた時点では確定させられない。
    */
   let pendingRelease: number | null = null;
+  /**
+   * 何も無い場所から始めたカメラの旋回が続いているか。選択中でもこの間だけ OrbitCamera を効かせ、
+   * 最後の指が離れたら「選択中は止める」状態へ戻す。
+   */
+  let cameraDrag = false;
 
   /**
    * 追跡中のうち先に触れた 2 本を、触れた順で返す。
@@ -581,7 +589,13 @@ export function createPieceInput(options: PieceInputOptions): PieceInput {
       drag = null;
       const pair = firstTwoPointers();
       gestureActive = selected !== null && pair !== null;
-      if (gestureActive && pair) gesture.reset(pair[0], pair[1]);
+      if (gestureActive && pair) {
+        // 1 本目が何も無い場所（カメラの旋回）でも、選択中の 2 本指はピースの回転 + ピンチに切り替える。
+        // OrbitCamera を止めないと、向こうのピンチとジェスチャの zoomBy が二重に効く
+        cameraDrag = false;
+        orbit.enabled = false;
+        gesture.reset(pair[0], pair[1]);
+      }
       return;
     }
 
@@ -613,8 +627,10 @@ export function createPieceInput(options: PieceInputOptions): PieceInput {
 
     const pieceId = pickPiece(event.clientX, event.clientY, event.pointerType);
     if (pieceId === null) {
-      // 何も無い場所 → 選択解除。カメラ旋回はこのあと bubble 段の OrbitCamera が受け取る
-      setSelected(null);
+      // 何も無い場所 → 選択は保ったままカメラを旋回させる。capture 段でここを通してから
+      // bubble 段の OrbitCamera が同じ pointerdown を受け取るので、このドラッグから回り始める
+      cameraDrag = true;
+      orbit.enabled = true;
       return;
     }
     setSelected(pieceId);
@@ -707,6 +723,11 @@ export function createPieceInput(options: PieceInputOptions): PieceInput {
     if (domElement.hasPointerCapture(event.pointerId)) {
       domElement.releasePointerCapture(event.pointerId);
     }
+    // カメラの旋回が終わったら、選択中はまたカメラを止める（ドラッグをピース操作に戻す）
+    if (pointers.size === 0 && cameraDrag) {
+      cameraDrag = false;
+      orbit.enabled = selected === null;
+    }
     // 最後の指が離れてから吸い付かせる（指が残っている間はまだ操作中）
     if (pointers.size === 0 && pendingRelease !== null) {
       const released = pendingRelease;
@@ -718,8 +739,8 @@ export function createPieceInput(options: PieceInputOptions): PieceInput {
   };
 
   const onWheel = (event: WheelEvent): void => {
-    // 非選択時はカメラのズーム（OrbitCamera）に任せる
-    if (selected === null) return;
+    // 非選択時とカメラの旋回中はカメラのズーム（OrbitCamera）に任せる（奥行き移動と二重にしない）
+    if (selected === null || cameraDrag) return;
     event.preventDefault();
     wheelAccumulated += wheelPixels(event);
     while (wheelAccumulated >= WHEEL_PIXELS_PER_STEP) {
@@ -771,6 +792,7 @@ export function createPieceInput(options: PieceInputOptions): PieceInput {
       rotateModeOn = false;
       gestureActive = false;
       pendingRelease = null;
+      cameraDrag = false;
     },
   };
 }
