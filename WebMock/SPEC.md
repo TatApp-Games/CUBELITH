@@ -1,4 +1,4 @@
-# GEODIA — Web 版 仕様書
+# CUBELITH — Web 版 仕様書
 
 ステータス: 初版（2026-09-04）。UE5 モバイル版の仕様書（付録 A）を Web 版の試作に写像したもの。
 この文書が Web 版の仕様の正。UE 固有の記述（ISM / Niagara / Blueprint 等）は 4〜5 章で Web の実装手段に読み替えている。

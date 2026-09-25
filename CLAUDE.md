@@ -1,4 +1,4 @@
-# GEODIA / Crystal Assemble
+# CUBELITH / Crystal Assemble
 
 プロシージャル 3D 組み立てパズル。**この CLAUDE.md はリポジトリ全体の入口**で、各サブプロジェクトの詳細（コマンド・開発ルール・タスクの切り方）はそれぞれの `CLAUDE.md` に置く。ルートには特定のサブプロジェクト専用のファイル（`package.json` など）を置かない。
 

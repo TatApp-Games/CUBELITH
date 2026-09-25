@@ -1,9 +1,9 @@
 {
-  "name": "geodia-web",
+  "name": "cubelith-web",
   "private": true,
   "version": "0.0.1",
   "type": "module",
-  "description": "GEODIA の Web 版試作。仕様は SPEC.md",
+  "description": "CUBELITH の Web 版試作。仕様は SPEC.md",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",

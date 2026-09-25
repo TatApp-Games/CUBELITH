@@ -1,4 +1,4 @@
-# ゲーム仕様書：『Crystal Assemble (仮)』
+# ゲーム仕様書：『CUBELITH』
 
 ## 1. プロジェクト概要
 
