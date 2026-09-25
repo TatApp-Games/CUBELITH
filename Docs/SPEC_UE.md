@@ -23,7 +23,7 @@
 | プロジェクト名 | CUBELITH（`CUBELITH.uproject`） |
 | パッケージ名 | `com.tatapp.cubelith`（Android の package 名と iOS の Bundle ID で共通。ストアに公開した後は変えられない） |
 | 画面の向き | 縦固定（Portrait） |
-| Android | 最低 API 26（Android 8.0。UE 5.8 が対応する下限）。64 bit Arm のみ。Target SDK はエンジンの推奨（UE 5.8 は 35）に合わせ、ストアに出す前に Google Play の要件を確かめる |
+| Android | 最低 API 26（Android 8.0。UE 5.8 が対応する下限）。64 bit Arm のみ。Target SDK はエンジンの既定（UE 5.8.3 は 36）に合わせ、ストアに出す前に Google Play の要件を確かめる。パッケージ名・向きは `Config/DefaultEngine.ini` に設定済み |
 
 ## 4. 描画と演出の実装（UE への写像）
 
@@ -57,7 +57,7 @@ Source/
     CUBELITH/             ゲーム本体（描画・入力・UI・セーブの C++）
     CUBELITHCore/         ゲームロジック（RULES.md 3 章）。WebMock の src/core に対応し、描画に依存しない
         Private/Tests/    Automation Test と照合データ（Fixtures/）
-Docs/                     RULES.md / SPEC_UE.md / ORIGIN.md
+Docs/                     RULES.md / SPEC_UE.md / FIXTURES.md / ORIGIN.md
 WebMock/                  Web 版（参照実装と照合データの出どころ）
 ```
 
@@ -105,6 +105,13 @@ WebMock/                  Web 版（参照実装と照合データの出どこ�
 - `Auto_Tasks/` は watch の作業ツリーに置く。`Binaries/`・`Intermediate/` は作業ツリーごとに持つ
 - verify のタイムアウトは watch.ps1 の既定 30 分。エンジンはビルド済みで、ビルドするのはプロジェクトのモジュールだけなので、この範囲に収まる見込み
 
+### 7.6 エディタの MCP
+
+- UE 5.8 同梱の Unreal MCP（プラグイン `ModelContextProtocol`）と、ツールを提供する `AllToolsets` を使う。どちらも実験的な機能で、`.uproject` でエディタのターゲットだけに有効にしている（ゲームのビルドには入れない）
+- サーバーはエディタの中で動き、エディタを開くと自動で起動する（`Config/DefaultEditorPerProjectUserSettings.ini` の `bAutoStartServer`）。接続先は `http://127.0.0.1:8000/mcp`（`.mcp.json`）。認証は無く、ループバックからしか受け付けない
+- エディタが開いているときだけ使える。そのため Auto_Tasks のタスクの完了条件（verify）には使わず、対話のセッションで補助に使う
+- MCP で AI がアセットを変えても、`.uasset` の差分は読めない。「`.uasset` は人が作る」（0 章）は変えない
+
 ## 8. 実装の段階（マイルストーン）
 
 | 段階 | 内容 | 担当 | 完了の目安 |
@@ -125,8 +132,5 @@ WebMock/                  Web 版（参照実装と照合データの出どこ�
 
 ## 10. スコープ（初回リリース）
 
-- 入れる: セーブ。ルールなので Web 版で先に作り、RULES.md に R 番号付きで書く（まだ書いていない）。2026-09-26 に決めたこと:
-  - 選んだ難易度・プレイ途中の盤面・これまでのクリア回数を保存する
-  - クリア回数は合計と難易度（N・M・パズルの回転）ごとに数え、タイトル画面に合計と選んでいる難易度での回数を出す
-  - 途中の盤面があれば、タイトル画面に「続きから」とその難易度・残りピース数を出す。新しく始めると途中の盤面は確認なしで上書きする
+- 入れる: セーブ。ルールは RULES.md 3.8（R3）。UE 版の保存の手段とタイミングは 4 章
 - 未定: ランキング・課金・広告、対応する言語、iOS に取りかかる時期、ストアに出す時期

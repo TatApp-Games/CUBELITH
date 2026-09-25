@@ -1,9 +1,20 @@
 # Auto_Tasks 自動実装体制の作業フォルダ（git 管理外）
 Auto_Tasks/
 
-# Node 関連は WebMock/.gitignore で除外する（ルートは将来 UE5 プロジェクトになる）
+# Node 関連は WebMock/.gitignore で除外する（ルートは UE5 プロジェクト）
 
 # その他
 *.log
 .DS_Store
 Thumbs.db
+
+# UE5（ルートが UE プロジェクト。Docs/SPEC_UE.md 7.4）
+/Binaries/
+/Intermediate/
+/Saved/
+/DerivedDataCache/
+/Plugins/*/Binaries/
+/Plugins/*/Intermediate/
+/.vs/
+/*.sln
+/*.slnx

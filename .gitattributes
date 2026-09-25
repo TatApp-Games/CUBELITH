@@ -1,0 +1,3 @@
+# UE のアセットはバイナリ。Git LFS は使わず普通の git で管理する（Docs/SPEC_UE.md 7.4）
+*.uasset binary
+*.umap binary

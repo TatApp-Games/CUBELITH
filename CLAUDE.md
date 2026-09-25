@@ -5,6 +5,10 @@
 ## ディレクトリ構成
 
 ```
+CUBELITH.uproject     UE5 版（本番）のプロジェクト。Config/・Content/・Source/ と合わせて、ルートが UE プロジェクトのルート
+Config/
+Content/
+Source/
 Docs/
     RULES.md          ゲームルールの正（Web 版・UE 版で共通）
     SPEC_UE.md        UE5 版（本番）の実装仕様。RULES.md をどこまで反映したかもここ
@@ -12,9 +16,10 @@ Docs/
     ORIGIN.md         最初の仕様書（UE5 モバイル版として書かれた原典。凍結）
 WebMock/              Web 版試作（TypeScript + Vite + Three.js）。詳細は WebMock/CLAUDE.md、実装仕様は WebMock/SPEC.md
 Auto_Tasks/           自動実装体制の作業フォルダ（git 管理外）
+.mcp.json             UE エディタの MCP サーバー（エディタを開いているときだけ使える。Docs/SPEC_UE.md 7.6）
 ```
 
-ルートは将来 UE5 プロジェクトのルートになる（`CUBELITH.uproject` などはルート直下に置く）。
+UE 版の構成とルールは `Docs/SPEC_UE.md` 7 章。UE 用の CLAUDE.md は U0 の残りで作る。
 
 ## 仕様書の構成
 
