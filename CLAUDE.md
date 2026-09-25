@@ -5,7 +5,7 @@
 ## ディレクトリ構成
 
 ```
-CrystalAssemble.txt   UE5 版（本番）のゲーム仕様書
+CrystalAssemble.md    UE5 版（本番）のゲーム仕様書
 WebMock/              Web 版試作（TypeScript + Vite + Three.js）。詳細は WebMock/CLAUDE.md、仕様の正は WebMock/SPEC.md
 Auto_Tasks/           自動実装体制の作業フォルダ（git 管理外）
 ```
