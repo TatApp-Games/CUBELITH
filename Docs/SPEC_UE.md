@@ -81,10 +81,12 @@ WebMock/                  Web 版（参照実装と照合データの出どこ�
 ### 7.3 テストと照合データ
 
 - ゲームロジックは UE の Automation Test で保証する。WebMock の `tests/` を移植する。テストはエディタのコマンドライン（`UnrealEditor-Cmd.exe` を `-nullrhi` などで起動）で回す。Launcher 版のエンジンでそのまま使える
-- 照合データ（RULES.md 3.6）: WebMock に書き出しの仕組みを足し（Web 版への要望にする）、出力（JSON）を `Source/CUBELITHCore/Private/Tests/Fixtures/` に置く
-  - 対象: N と M のプリセット 25 通り × パズルの回転 2 通り × シード数個
-  - 中身: 生成したピース（id と解答のボクセル）、初期散らし（ピースごとの位置と向き）、散らし直し（ヒントの固定があるとき・ないとき）。加えて向きの表（24 通り）と、いくつかのシードでの乱数の出力列
+- 照合データ（RULES.md 3.6）: WebMock が書き出した JSON を `Source/CUBELITHCore/Private/Tests/Fixtures/` に置く（28 ファイル）
+  - **JSON の形と作り方は `FIXTURES.md`**（照合データの形の正）。書き出しは WebMock の `npm run export:fixtures`（ルートからは `npm --prefix WebMock run export:fixtures`）
+  - 対象: N と M のプリセット 25 通り × パズルの回転 2 通り × シード 3 個
+  - 中身: 生成したピース（id と局所座標のボクセル。解答の絶対座標は解答配置から復元する）、解答配置、初期散らし（ピースごとの位置と向き）、散らし直し（ヒントの固定があるとき・ないとき）。加えて向きの表（24 通り）と、いくつかのシードでの乱数の出力列
   - 生成の途中ではなく結果全体を比べる。「生成への影響」がある R を反映するときに作り直す
+  - Web 版側も同じデータとの一致を `WebMock/tests/fixtures.test.ts` で見ている（`src/core` の生成結果が変わったらそこで落ちる）
 
 ### 7.4 リポジトリ
 
