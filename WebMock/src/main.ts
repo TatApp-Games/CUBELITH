@@ -29,16 +29,24 @@ import { createRotationGizmo, type GizmoAxis } from './render/rotationGizmo';
 import { createRenderContext } from './render/scene';
 import { createSnapMotion } from './render/snapMotion';
 import { createClearScreen } from './ui/clearScreen';
-import {
-  DEFAULT_ALLOW_ROTATION,
-  DEFAULT_PIECE_COUNT,
-  DEFAULT_SPACE_SIZE,
-  randomSeed,
-} from './ui/difficulty';
+import { DEFAULT_PIECE_COUNT, randomSeed } from './ui/difficulty';
 import { createFpsMeter, type FpsMeter } from './ui/fpsMeter';
 import { createHud, type Hud } from './ui/hud';
 import { clampInt, readAppParams, withSettings } from './ui/params';
 import { unsettledPieceCount } from './ui/progress';
+import {
+  clearCountOf,
+  loadSave,
+  progressFitsPieces,
+  storeSave,
+  withClearRecorded,
+  withProgress,
+  type SaveData,
+  type SavedDifficulty,
+  type SavedLock,
+  type SavedProgress,
+  type SaveStorage,
+} from './ui/save';
 import { createScreenManager } from './ui/screens';
 import { createTitleScreen } from './ui/titleScreen';
 import type { Screen } from './ui/screens';
@@ -71,13 +79,22 @@ type Session = {
 /**
  * タイトル画面の初期値。クエリの読み取りと不正値の扱いは src/ui/params.ts が持つ。
  * N / M は範囲外なら core が受け付ける範囲へ丸め、seed は不正なら乱数へフォールバックする。
+ *
+ * 優先順位は **URL クエリ > セーブ（RULES.md 3.8）> 既定**。
+ * 解釈: `?n=` `?m=` は「タイトルの初期選択」を指定する検証用のクエリ（WebMock/CLAUDE.md）なので、
+ * 明示された指定をセーブで上書きしない。クエリに無い「パズルの回転」はセーブ → 既定の順になる
+ * （セーブが無いときの saved は defaultSaveData の難易度 = 既定）。
  */
-function initialSettings(query: ReturnType<typeof readAppParams>): Settings {
-  const n = clampInt(query.n, MIN_SPACE_SIZE, MAX_SPACE_SIZE) ?? DEFAULT_SPACE_SIZE;
-  const m = clampInt(query.m, MIN_PIECE_COUNT, maxPieces(n)) ?? DEFAULT_PIECE_COUNT;
+function initialSettings(
+  query: ReturnType<typeof readAppParams>,
+  saved: SavedDifficulty,
+): Settings {
+  const n = clampInt(query.n, MIN_SPACE_SIZE, MAX_SPACE_SIZE) ?? saved.n;
+  // N がクエリで変わると M の上限も変わるので、セーブの M もここで丸める
+  const m = clampInt(query.m ?? saved.m, MIN_PIECE_COUNT, maxPieces(n)) ?? DEFAULT_PIECE_COUNT;
   // シードは RULES.md 3.1 のとおり外から指定できる（Web では ?seed=。SPEC.md 7 章）。無ければ毎回引き直す。
-  // 回転の有無はクエリに無いので既定（なし）から始める
-  return { n, m, seed: query.seed ?? randomSeed(), allowRotation: DEFAULT_ALLOW_ROTATION };
+  // シードはセーブしない（途中の盤面を再開するときだけ、その盤面のシードを使う。RULES.md 3.8）
+  return { n, m, seed: query.seed ?? randomSeed(), allowRotation: saved.allowRotation };
 }
 
 /**
@@ -160,6 +177,28 @@ const query = readAppParams(window.location.search);
 // 軽量モードは ?lite= が最優先、無指定なら端末判定（src/render/quality.ts）
 const lite = query.lite ?? preferLiteMode();
 
+/**
+ * セーブの置き場（SPEC.md 7 章）。プライベートモードや埋め込みでは `localStorage` の
+ * 参照そのものが例外になることがあるので、読めない環境では null にして「保存しない」で動かす。
+ */
+function detectSaveStorage(): SaveStorage | null {
+  try {
+    return typeof localStorage === 'undefined' ? null : localStorage;
+  } catch {
+    return null;
+  }
+}
+
+const saveStorage = detectSaveStorage();
+/** 起動時に 1 回だけ読み、以後はこれを持ち回して変更のたびに書く（RULES.md 3.8）。 */
+let save: SaveData = loadSave(saveStorage);
+
+/** セーブを更新して保存する。書けない環境でも storeSave が握りつぶすのでメモリ上は進む。 */
+function persistSave(next: SaveData): void {
+  save = next;
+  storeSave(saveStorage, next);
+}
+
 const context = createRenderContext(container);
 const orbit = createOrbitCamera(context.camera, context.renderer.domElement);
 // マグネットスナップの SE（RULES.md 3.5）。WebAudio の合成音なのでアプリ全体で 1 つでよい
@@ -184,33 +223,106 @@ function disposeSession(): void {
   session = null;
 }
 
-/** タイトル（難易度選択）へ。セッションが走っていれば破棄する。 */
+/**
+ * タイトル（難易度選択）へ。セッションが走っていれば破棄する。
+ * 途中の盤面（RULES.md 3.8）が残っていれば「続きから」とクリア回数もここで渡す。
+ */
 function showTitle(settings: Settings): void {
   disposeSession();
+  // 画面を作った時点の途中の盤面を見せる（タイトルにいる間はセーブが変わらない）
+  const progress = save.progress;
   screens.show('title', (host): Screen =>
     createTitleScreen(host, {
       n: settings.n,
       m: settings.m,
       seed: settings.seed,
       allowRotation: settings.allowRotation,
+      resume:
+        progress === null
+          ? null
+          : {
+              n: progress.difficulty.n,
+              m: progress.difficulty.m,
+              allowRotation: progress.difficulty.allowRotation,
+              remaining: progress.remaining,
+            },
+      clearTotal: save.clears.total,
+      clearCountOf: (n, m, allowRotation): number =>
+        clearCountOf(save, { n, m, allowRotation }),
       onStart: (selection): void => {
         startSession(selection);
+      },
+      onResume: (): void => {
+        if (progress === null) return;
+        // 盤面の難易度とシードで開き直す（タイトルでの選択ではなく、保存された盤面が優先）
+        startSession(
+          {
+            n: progress.difficulty.n,
+            m: progress.difficulty.m,
+            seed: progress.seed,
+            allowRotation: progress.difficulty.allowRotation,
+          },
+          progress,
+        );
       },
     }),
   );
 }
 
-/** 生成 → 散らし → プレイ（RULES.md 2 章 2 / 3）。 */
-function startSession(settings: Settings): void {
+/**
+ * 生成 → 散らし → プレイ（RULES.md 2 章 2 / 3）。
+ *
+ * restore を渡すと散らす代わりに保存された盤面（配置と固定）から再開する（RULES.md 3.8。
+ * タイトルの「続きから」）。渡さないときは新しい盤面で、途中の盤面は**確認なしで上書きする**
+ * （「開始」・クリア画面の「もう一度」・HUD の「次の問題」はすべてここを通る）。
+ */
+function startSession(settings: Settings, restore?: SavedProgress): void {
   disposeSession();
   const { n, m, seed, allowRotation } = settings;
 
   const puzzle = generatePuzzle(n, m, seed);
+  const difficulty: SavedDifficulty = { n, m, allowRotation };
+  // 復元できない盤面（生成規則が変わってピース id が食い違うなど）は諦めて通常の散らしで始める。
+  // createGame と同じ条件を先に見ることで、例外を外へ出さずに済む
+  const restored =
+    restore !== undefined &&
+    progressFitsPieces(restore, puzzle.pieces.map((piece): number => piece.id))
+      ? restore
+      : null;
   // 回転なしでは全ピースを恒等の向きで散らす（平行移動だけで解答配置に到達できる）
-  const initial = scatterPlacements(puzzle.pieces, n, seed, { allowRotation });
+  const initial =
+    restored?.placements ?? scatterPlacements(puzzle.pieces, n, seed, { allowRotation });
   const total = puzzle.pieces.length;
 
   syncLocation(settings);
+
+  /** 今の盤面をセーブへ書く（RULES.md 3.8。キーとタイミングは SPEC.md 7 章）。 */
+  const saveProgress = (
+    placements: readonly Placement[],
+    locks: readonly SavedLock[],
+    remaining: number,
+  ): void => {
+    persistSave(withProgress(save, { difficulty, seed, placements, locks, remaining }));
+  };
+
+  /** 固定中のピース（id 昇順）をセーブの形にする。 */
+  const currentLocks = (): SavedLock[] =>
+    game.lockedIds().map((pieceId): SavedLock => ({
+      pieceId,
+      kind: game.lockKindOf(pieceId) ?? 'manual',
+    }));
+
+  /** 配置を変えない操作（固定 / 固定解除 / 散らし直し / ヒント）の直後に呼ぶ。 */
+  const saveBoard = (): void => {
+    // ヒントで最後のずれが埋まってクリアした直後にもここへ来る。クリアした盤面は残さない
+    if (finished) return;
+    const placements = game.placements();
+    saveProgress(placements, currentLocks(), unsettledPieceCount(puzzle.pieces, placements, n));
+  };
+
+  // 「開始」「続きから」で難易度を確定させ、新しい盤面はここで（確認なしに）上書きする。
+  // 解釈: タイトルで選択を変えただけでは保存しない（押さずに閉じた選択まで覚えると表示が紛れる）
+  saveProgress(initial, restored?.locks ?? [], unsettledPieceCount(puzzle.pieces, initial, n));
 
   const pieceViews = createPieceViews(puzzle.pieces, n, { lite });
   const frame = createSolutionFrame(n);
@@ -308,6 +420,9 @@ function startSession(settings: Settings): void {
   const showClear = (): void => {
     if (finished) return;
     finished = true;
+    // クリア回数（合計と難易度ごと）を 1 つ増やし、途中の盤面を忘れる（RULES.md 3.8）。
+    // showClear は二重に呼ばれない（finished）ので回数は 1 回だけ増える
+    persistSave(withClearRecorded(save, difficulty));
     // 回転モードのねじれを解いてから片付ける（クリアした形が歪んで見えないように）
     exitRotateMode();
     // 選択を解いてからカメラ操作を戻す（select(null) が orbit.enabled を true にする）
@@ -352,15 +467,28 @@ function startSession(settings: Settings): void {
   // 配置が変わるたびに描画・HUD・スナップ候補へ反映する（RULES.md 3.4）
   const game = createGame(puzzle.pieces, n, initial, (placements, solved): void => {
     pieceViews.updatePlacements(placements);
-    hud?.setRemaining(unsettledPieceCount(puzzle.pieces, placements, n), total);
+    const remaining = unsettledPieceCount(puzzle.pieces, placements, n);
+    hud?.setRemaining(remaining, total);
     // 位置が変わったこのタイミングだけで候補を計算し直す（毎フレームは回さない）
     const active = input?.selectedPieceId() ?? null;
     snap.refresh(active !== null && game.lockKindOf(active) !== null ? null : active);
     refreshHintEnabled();
     // ピースが動けばギズモの中心も動く（回転モードでなければ消えたまま）
     refreshGizmo();
-    if (solved) showClear();
+    if (solved) {
+      // クリアした盤面は「続きから」に出さない（showClear が回数を記録して盤面を消す）
+      showClear();
+      return;
+    }
+    // 1 グリッド分の移動ごとに呼ばれる程度の頻度なので毎回書いてよい（SPEC.md 7 章）
+    saveProgress(placements, currentLocks(), remaining);
   });
+
+  // 保存された固定を復元する（lock は配置を変えないので onChange は呼ばれない。アイコンも揃える）
+  for (const lock of restored?.locks ?? []) {
+    game.lock(lock.pieceId, lock.kind);
+    pieceViews.setLockIcon(lock.pieceId, lock.kind);
+  }
 
   input = createPieceInput({
     domElement: context.renderer.domElement,
@@ -476,6 +604,8 @@ function startSession(settings: Settings): void {
           pieceViews.setLockIcon(piece.id, game.lockKindOf(piece.id));
         }
         refreshHintEnabled();
+        // reset の onChange でも書かれるが、そこでは固定の解除が反映済みか読み手に見えないので明示する
+        saveBoard();
       },
       onBackToTitle: (): void => {
         showTitle({ n, m, seed: randomSeed(), allowRotation });
@@ -505,6 +635,8 @@ function startSession(settings: Settings): void {
         // 固定したら候補を消し、解除したら計算し直す
         snap.refresh(next === null ? pieceId : null);
         refreshHintEnabled();
+        // 固定 / 固定解除は配置を変えない（onChange が呼ばれない）ので、ここで書く
+        saveBoard();
       },
       onToggleRotateMode: (): void => {
         if (input === null) return;
@@ -540,6 +672,8 @@ function startSession(settings: Settings): void {
           selected !== null && game.lockKindOf(selected) !== null ? null : selected,
         );
         refreshHintEnabled();
+        // place の onChange で配置は書かれるが、その後に付けた固定もここで書く
+        saveBoard();
       },
     }, { allowRotation }),
   );
@@ -559,4 +693,4 @@ context.start((delta, elapsed): void => {
   fpsMeter?.update(delta, context.drawCalls());
 });
 
-showTitle(initialSettings(query));
+showTitle(initialSettings(query, save.difficulty));
