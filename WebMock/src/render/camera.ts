@@ -14,6 +14,14 @@ const MAX_POLAR = Math.PI - 0.08;
 /** 目標値へ追従する割合（1 で即時）。 */
 const DAMPING = 0.18;
 
+/**
+ * ホイールの deltaY からズーム倍率（距離に掛ける値。< 1 で寄る）を出す。
+ * OrbitCamera 自身のホイールと、ピース選択中に pieceInput が zoomBy へ渡す分とで感度を揃える。
+ */
+export function wheelZoomScale(deltaY: number): number {
+  return Math.exp(deltaY * ZOOM_SPEED);
+}
+
 export type OrbitCameraOptions = {
   /** 注視点。既定は原点。 */
   readonly target?: THREE.Vector3;
@@ -135,7 +143,7 @@ export function createOrbitCamera(
   const onWheel = (event: WheelEvent): void => {
     if (!enabled) return;
     event.preventDefault();
-    applyRadius(goalRadius * Math.exp(event.deltaY * ZOOM_SPEED));
+    applyRadius(goalRadius * wheelZoomScale(event.deltaY));
   };
 
   const onContextMenu = (event: Event): void => {

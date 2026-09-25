@@ -1,6 +1,6 @@
 // ポインタ / タッチ入力をピース操作に変換する（SPEC.md 3.3）。
-// クリック / タップで選択、ドラッグでボクセル単位の移動、ホイールで奥行き移動、
-// 2 本指で 90 度回転とピンチズーム。
+// クリック / タップで選択、ドラッグでボクセル単位の移動、2 本指で 90 度回転。
+// ホイール / ピンチは選択の有無によらず常にカメラのズーム。
 // ピースを押したドラッグはピース操作、何も無い場所から始めたドラッグは（選択中でも）カメラの旋回。
 // 何も無い場所を押しても選択は外さない（外れるのは散らし直すなど外からの select(null) だけ）。
 //
@@ -14,12 +14,14 @@
 //
 // 2 本指の割り当て（解釈）: SPEC.md 3.3 は回転も奥行き移動も「2 本指スワイプ **または** UI ボタン」を
 // 認めている。両方を 2 本指に載せると区別できないので、**2 本指は回転（スワイプ / ひねり）と
-// ピンチズームに割り当て、奥行き移動はホイールに寄せる**（HUD の奥行きボタンは廃止済み）。
+// ピンチズームに割り当て、奥行き方向の専用操作は持たない**（HUD の奥行きボタンもホイールでの
+// 奥行き移動も廃止済み）。奥行き方向へ動かしたいときは、カメラを回してその軸を画面上に出してから
+// ドラッグで動かす（ドラッグの 2 軸はカメラの向きで決まる）。
 // 認識そのものは Three.js に依存しない twoFingerGesture.ts が持つ。
 
 import * as THREE from 'three';
 import { addVec3, type Axis, type Vec3 } from '../core/grid';
-import type { OrbitCamera } from '../render/camera';
+import { wheelZoomScale, type OrbitCamera } from '../render/camera';
 import type { GizmoAxis } from '../render/rotationGizmo';
 import { axisStepVector, dragAxes, type DragAxes } from './axisMapping';
 import { pickSampleOffsets } from './pickSamples';
@@ -33,9 +35,6 @@ import { createTwoFingerGesture, type Point } from './twoFingerGesture';
  */
 const MIN_PIXELS_PER_VOXEL = 14;
 const MAX_PIXELS_PER_VOXEL = 160;
-
-/** ホイールの累積量がこれを超えるたびに奥行きを 1 マス動かす。 */
-const WHEEL_PIXELS_PER_STEP = 60;
 
 /**
  * 回転モードのドラッグ感度（ドラッグ 1 px あたりの回転角・度）。
@@ -136,8 +135,6 @@ export type PieceInput = {
   selectedPieceId(): number | null;
   /** 外（UI など）から選択を変える。 */
   select(pieceId: number | null): void;
-  /** アクティブなピースを奥行き方向に 1 マス動かす（+1 = カメラから遠ざかる）。 */
-  moveDepth(dir: 1 | -1): void;
   /**
    * 回転モードの出入り。オンの間、選択中のピースへのドラッグは移動ではなく連続回転になる。
    * 選択が無い / 固定中のピースではオンにできないので、結果は rotateMode() で確かめる。
@@ -210,13 +207,6 @@ function wrapAngle(angle: number): number {
 }
 
 
-/** ホイールの delta を px 相当に正規化する（行 / ページ単位のブラウザ対策）。 */
-function wheelPixels(event: WheelEvent): number {
-  if (event.deltaMode === 1) return event.deltaY * 16;
-  if (event.deltaMode === 2) return event.deltaY * 100;
-  return event.deltaY;
-}
-
 export function createPieceInput(options: PieceInputOptions): PieceInput {
   const { domElement, camera, root, orbit } = options;
 
@@ -251,7 +241,6 @@ export function createPieceInput(options: PieceInputOptions): PieceInput {
   /** 固定中なら true。isLocked を渡さなければ常に false（固定の概念が無い呼び出し側）。 */
   const isLocked = (pieceId: number): boolean => options.isLocked?.(pieceId) ?? false;
   const allowRotation = options.allowRotation ?? true;
-  let wheelAccumulated = 0;
 
   /** 追跡中のポインタ（主ボタン / 指のみ）。 */
   const pointers = new Map<number, Point>();
@@ -393,14 +382,9 @@ export function createPieceInput(options: PieceInputOptions): PieceInput {
     commitRotateDrag();
     rotateModeOn = false;
     selected = pieceId;
-    // 選択中のドラッグはピース移動。非選択時だけカメラを旋回・ズームさせる
+    // 選択中はカメラの旋回を止める（ドラッグはピース操作。ズームはホイール / ピンチでいつでも効く）
     orbit.enabled = pieceId === null;
     options.onSelectionChange(pieceId);
-  };
-
-  const moveDepth = (dir: 1 | -1): void => {
-    if (selected === null || isLocked(selected)) return;
-    options.onMove(selected, axisStepVector(currentAxes().depth, dir));
   };
 
   /**
@@ -739,18 +723,11 @@ export function createPieceInput(options: PieceInputOptions): PieceInput {
   };
 
   const onWheel = (event: WheelEvent): void => {
-    // 非選択時とカメラの旋回中はカメラのズーム（OrbitCamera）に任せる（奥行き移動と二重にしない）
-    if (selected === null || cameraDrag) return;
+    // ホイールは選択の有無によらず常にズーム（SPEC.md 3.3）。OrbitCamera が効いている間
+    // （非選択時・カメラ旋回中）は向こうに任せ、選択中で止めてある間だけここから寄せる
+    if (orbit.enabled) return;
     event.preventDefault();
-    wheelAccumulated += wheelPixels(event);
-    while (wheelAccumulated >= WHEEL_PIXELS_PER_STEP) {
-      wheelAccumulated -= WHEEL_PIXELS_PER_STEP;
-      moveDepth(1);
-    }
-    while (wheelAccumulated <= -WHEEL_PIXELS_PER_STEP) {
-      wheelAccumulated += WHEEL_PIXELS_PER_STEP;
-      moveDepth(-1);
-    }
+    orbit.zoomBy(wheelZoomScale(event.deltaY));
   };
 
   // capture 段で受けることで、bubble 段の OrbitCamera より先に enabled を切り替えられる
@@ -768,7 +745,6 @@ export function createPieceInput(options: PieceInputOptions): PieceInput {
     select(pieceId: number | null): void {
       setSelected(pieceId);
     },
-    moveDepth,
     setRotateMode(enabled: boolean): void {
       // 選択が無い / 固定中のピースでは回転モードに入らない（00000003_003）。
       // 回転なしの難易度では回転モードそのものが無いので常に入らない
