@@ -8,6 +8,7 @@
 Docs/
     RULES.md          ゲームルールの正（Web 版・UE 版で共通）
     SPEC_UE.md        UE5 版（本番）の実装仕様。RULES.md をどこまで反映したかもここ
+    FIXTURES.md       UE 版と照合するデータ（JSON）の形
     ORIGIN.md         最初の仕様書（UE5 モバイル版として書かれた原典。凍結）
 WebMock/              Web 版試作（TypeScript + Vite + Three.js）。詳細は WebMock/CLAUDE.md、実装仕様は WebMock/SPEC.md
 Auto_Tasks/           自動実装体制の作業フォルダ（git 管理外）

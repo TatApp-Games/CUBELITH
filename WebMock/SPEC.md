@@ -55,13 +55,14 @@ WebMock/
         input/              ポインタ / タッチ入力をゲーム操作に変換
         ui/                 HTML の画面と HUD
     tests/                  Vitest。core/ の全関数に対する単体テスト
+    scripts/                Node で走らせる補助スクリプト。UE 版と照合するデータの書き出し（ブラウザには載らない）
     SPEC.md / CLAUDE.md
 ```
 
-- 依存: `three`, `vite`, `typescript`, `vitest`。これ以外を足すときは理由を CLAUDE.md に書く
-- コマンド: `npm run dev`（開発サーバ）/ `npm test`（Vitest 一括）/ `npm run build`（型チェック込みの本番ビルド）
+- 依存: `three`, `vite`, `typescript`, `vitest`, `vite-node`。これ以外を足すときは理由を CLAUDE.md に書く
+- コマンド: `npm run dev`（開発サーバ）/ `npm test`（Vitest 一括）/ `npm run build`（型チェック込みの本番ビルド）/ `npm run export:fixtures`（UE 版と照合するデータの書き出し）
 - `src/core` は **Three.js に依存しない**。生成・判定・スナップは全部ここに置き、テストで保証する
-- `src/core` は UE 版の照合データの出どころでもある（RULES.md 3.6）。生成・初期散らしの結果が変わる変更は、RULES.md の変更履歴の「生成への影響」に書く
+- `src/core` は UE 版の照合データの出どころでもある（RULES.md 3.6）。書き出しは `npm run export:fixtures`（出力先は `../Source/CUBELITHCore/Private/Tests/Fixtures/`）で、**JSON の形と作り方は `../Docs/FIXTURES.md`**。コミット済みのデータと `src/core` の今の出力が一致することは `tests/fixtures.test.ts` が見る。生成・初期散らしの結果が変わる変更は、RULES.md の変更履歴の「生成への影響」に書く（照合データを作り直す合図）
 - UI は素の HTML + CSS（フレームワーク不使用）。Three.js のキャンバスに重ねる（RULES.md 6 章の実装）
 - RULES.md 3.1 のシードの指定は URL クエリ `?seed=` で行う。検証用のクエリの一覧は CLAUDE.md、読み取りと不正値の扱いは `src/ui/params.ts`
 
