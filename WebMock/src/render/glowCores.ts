@@ -37,6 +37,11 @@ export type GlowCores = {
   update(elapsedSeconds: number): void;
   /** クリア演出の発光ブースト（0 = 平常、1 = 最大）。 */
   setBoost(amount: number): void;
+  /**
+   * ピースのコアを隠す / 戻す。固定中のピースはコアの代わりにロックアイコン（lockIcons）を出す。
+   * 隠したコアもクリア演出のブーストに合わせて光る（SPEC.md 5.2-1「全ボクセルが連動」を保つ）。
+   */
+  setHidden(pieceId: number, hidden: boolean): void;
   /** ジオメトリ / マテリアルを解放する。 */
   dispose(): void;
 };
@@ -97,6 +102,8 @@ export function createGlowCores(
   const matrix = new THREE.Matrix4();
   const scratch = new THREE.Color();
   let boost = 0;
+  // コアを隠しているピース（固定中のピース）
+  const hiddenPieces = new Set<number>();
 
   // instanceColor を確保しておく（setColorAt の初回呼び出しで作られる）
   for (let i = 0; i < object.count; i += 1) object.setColorAt(i, scratch.setScalar(0));
@@ -119,11 +126,14 @@ export function createGlowCores(
     },
 
     update(elapsedSeconds: number): void {
-      for (const range of ranges.values()) {
+      for (const [pieceId, range] of ranges) {
         const breath = 0.5 + 0.5 * Math.sin(elapsedSeconds * BREATH_SPEED + range.phase);
         // ブーストが上がるほど位相差が消え、全ボクセルが連動して最大へ向かう（SPEC.md 5.2-1）
         const level = THREE.MathUtils.lerp(breath, 1, boost);
-        const intensity = level * THREE.MathUtils.lerp(BASE_GLOW, BURST_GLOW, boost);
+        // 隠したコアは平常時は 0（加算合成なので黒は見えない）で、ブーストに合わせて他へ追いつく
+        const visibility = hiddenPieces.has(pieceId) ? boost : 1;
+        const intensity =
+          level * visibility * THREE.MathUtils.lerp(BASE_GLOW, BURST_GLOW, boost);
         scratch.copy(range.color).multiplyScalar(intensity);
         for (let i = 0; i < range.count; i += 1) {
           object.setColorAt(range.start + i, scratch);
@@ -136,7 +146,13 @@ export function createGlowCores(
       boost = THREE.MathUtils.clamp(amount, 0, 1);
     },
 
+    setHidden(pieceId: number, hidden: boolean): void {
+      if (hidden) hiddenPieces.add(pieceId);
+      else hiddenPieces.delete(pieceId);
+    },
+
     dispose(): void {
+      hiddenPieces.clear();
       object.removeFromParent();
       object.dispose();
       geometry.dispose();

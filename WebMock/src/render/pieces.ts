@@ -6,7 +6,7 @@
 //   + 1              内部発光コア（glowCores。全ピース分をまとめた 1 つの InstancedMesh）
 //   + 1              解答空間の枠（createSolutionFrame の LineSegments）
 //   + 1（軽量モードのみ） 稜線の発光（edgeGlow。これも全ピースで 1 本）
-//   + 固定中のピース数  ロックアイコンの Sprite（lockIcons。固定していなければ 0）
+//   + 最大 2         ロックアイコン（lockIcons。銀・金の種類ごとに 1 つの InstancedMesh。使っていない種類は描かない）
 // ジオメトリは全ピースで 1 つを共有し、マテリアルだけをピースごとに持つ（色が違うため）。
 // すりガラスの屈折パスは three が opaque な物体だけをもう一度描くもので、ピース数には比例しない。
 
@@ -87,7 +87,8 @@ export type PieceViews = {
   setGlowBoost(amount: number): void;
   /**
    * 固定（ロック）を示すアイコンを出す / 消す（null で消す）。
-   * 位置はそのピースの配置後ボクセルの重心なので、動かせば追従する。
+   * アイコンはそのピースの各ボクセルの中心に出し、代わりにそのピースの内部発光コアを消す。
+   * 位置は配置と一緒に書き直すので、動かせば追従する。
    */
   setLockIcon(pieceId: number, kind: LockIconKind | null): void;
   /** ピース群（本体 + コア）の表示。融合演出（SPEC.md 5.2-2）で false にする。 */
@@ -216,8 +217,8 @@ export function createPieceViews(
     : null;
   if (edges) object.add(edges.object);
 
-  // 固定中のピースに出す南京錠アイコン。Sprite は固定したときにだけ作られる
-  const lockIcons = createLockIcons();
+  // 固定中のピースのボクセルごとに出す南京錠アイコン。全ピース分のスロットを種類ごとに 1 セット持つ
+  const lockIcons = createLockIcons(pieces);
   object.add(lockIcons.object);
 
   // 融合後の巨大クリスタルの色（SPEC.md 5.2-2）。全ピース色の平均。
@@ -253,9 +254,7 @@ export function createPieceViews(
     const offset = offsets.get(placement.pieceId) ?? NO_OFFSET;
     const freeRotation = freeRotations.get(placement.pieceId);
     const voxels = placedVoxels(piece, placement);
-    // 「ピースの中心」= 配置後ボクセルの重心（局所原点は端に寄ることがある）。
-    // ロックアイコンを置く点であり、自由回転の回転中心でもある。
-    // 重心まわりの回転は重心を動かさないので、自由回転中もアイコンの位置は変わらない
+    // 「ピースの中心」= 配置後ボクセルの重心（局所原点は端に寄ることがある）。自由回転の回転中心
     let sumX = 0;
     let sumY = 0;
     let sumZ = 0;
@@ -285,11 +284,11 @@ export function createPieceViews(
         matrix.compose(rotated.set(x, y, z), freeRotation, UNIT_SCALE);
       }
       mesh.setMatrixAt(i, matrix);
-      // 発光コアと稜線はボクセルの中心に置く（ボクセル本体と同じ座標）
+      // 発光コア・稜線・ロックアイコンはボクセルの中心に置く（ボクセル本体と同じ座標）
       cores.setPosition(placement.pieceId, i, x, y, z);
       edges?.setPosition(placement.pieceId, i, x, y, z);
+      lockIcons.setPosition(placement.pieceId, i, x, y, z);
     });
-    lockIcons.setPosition(placement.pieceId, centerX, centerY, centerZ);
     mesh.instanceMatrix.needsUpdate = true;
     // インスタンスを動かしたら境界球を捨てる。three の InstancedMesh.raycast は境界球との交差で
     // まずふるいに掛け、null のときだけ作り直す。古い球を使い回すと、動かしたピースが球の外へ
@@ -299,6 +298,7 @@ export function createPieceViews(
     mesh.boundingSphere = null;
     cores.flush();
     edges?.flush();
+    lockIcons.flush();
   };
 
   /**
@@ -394,6 +394,8 @@ export function createPieceViews(
     setLockIcon(pieceId: number, kind: LockIconKind | null): void {
       if (!pieceById.has(pieceId)) throw new Error(`未知のピース id ${pieceId}`);
       lockIcons.set(pieceId, kind);
+      // 丸い発光コアはアイコンと重なるので、固定中は消す
+      cores.setHidden(pieceId, kind !== null);
     },
     setPiecesVisible(visible: boolean): void {
       object.visible = visible;
