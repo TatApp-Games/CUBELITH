@@ -301,6 +301,23 @@ export function withoutProgress(data: SaveData): SaveData {
   return { ...data, progress: null };
 }
 
+/**
+ * 保存された盤面をそのまま初期配置として使えるか（`core/game` の `createGame` が受け付ける条件
+ * と同じ: 全ピースの id がちょうど 1 回ずつ現れる）。
+ *
+ * 生成規則が変わった / 手で書き換えられた場合にここで弾き、復元をあきらめて通常の散らしで
+ * 始められるようにする（`createGame` に渡して例外を受け止めるより、条件を先に見るほうが読みやすい）。
+ */
+export function progressFitsPieces(
+  progress: SavedProgress,
+  pieceIds: readonly number[],
+): boolean {
+  if (progress.placements.length !== pieceIds.length) return false;
+  const placed = new Set(progress.placements.map((p): number => p.pieceId));
+  if (placed.size !== progress.placements.length) return false;
+  return pieceIds.every((id): boolean => placed.has(id));
+}
+
 /** その難易度のクリア回数（記録が無ければ 0）。 */
 export function clearCountOf(data: SaveData, difficulty: SavedDifficulty): number {
   return data.clears.byDifficulty[difficultyKey(difficulty)] ?? 0;

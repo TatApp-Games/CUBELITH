@@ -8,6 +8,7 @@ import {
   difficultyKey,
   loadSave,
   parseSaveData,
+  progressFitsPieces,
   SAVE_KEY,
   SAVE_VERSION,
   serializeSaveData,
@@ -289,6 +290,32 @@ describe('更新ヘルパ', () => {
   it('clearCountOf は記録が無ければ 0', () => {
     expect(clearCountOf(defaultSaveData(), EASY)).toBe(0);
     expect(clearCountOf(fullSaveData(), EASY_ROTATED)).toBe(0);
+  });
+});
+
+describe('progressFitsPieces', () => {
+  it('ピース id が過不足なく揃っていれば true（並び順は問わない）', () => {
+    const progress = progressOf(EASY);
+    expect(progressFitsPieces(progress, [0, 1, 2, 3])).toBe(true);
+    expect(progressFitsPieces(progress, [3, 1, 0, 2])).toBe(true);
+  });
+
+  it('ピースの数が違えば false', () => {
+    const progress = progressOf(EASY);
+    expect(progressFitsPieces(progress, [0, 1, 2])).toBe(false);
+    expect(progressFitsPieces(progress, [0, 1, 2, 3, 4])).toBe(false);
+  });
+
+  it('数が同じでも id が食い違えば false', () => {
+    expect(progressFitsPieces(progressOf(EASY), [0, 1, 2, 9])).toBe(false);
+  });
+
+  it('保存された配置に重複した id があれば false', () => {
+    const progress: SavedProgress = {
+      ...progressOf(EASY),
+      placements: [...placementsOf(3), { pieceId: 0, orientation: 0, position: { x: 0, y: 0, z: 0 } }],
+    };
+    expect(progressFitsPieces(progress, [0, 1, 2, 3])).toBe(false);
   });
 });
 
