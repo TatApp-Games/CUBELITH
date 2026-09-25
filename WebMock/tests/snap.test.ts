@@ -256,7 +256,7 @@ describe('snapCandidate（生成したパズル）', () => {
     { n: 3, m: 4, seed: 7 },
     { n: 4, m: 5, seed: 12345 },
     { n: 5, m: 8, seed: 99 },
-    { n: 7, m: 40, seed: 2026 },
+    { n: 7, m: 27, seed: 2026 },
   ];
 
   for (const { n, m, seed } of CASES) {

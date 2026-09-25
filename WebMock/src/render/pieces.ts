@@ -1,7 +1,7 @@
 // ピース群の描画。1 ピース = 1 InstancedMesh（CLAUDE.md 開発ルール 4 / SPEC.md 4 章）。
 // 位置・向きの解釈は core に任せ、ここは placedVoxels の結果を行列に落とすだけにする。
 //
-// ドローコールの内訳（SPEC.md 4 章。N=7 / M=40 でも「ピース数 + α」に収める）:
+// ドローコールの内訳（SPEC.md 4 章。N=7 / M=27 でも「ピース数 + α」に収める）:
 //   M                ピース本体。ボクセル数によらず 1 ピース 1 回
 //   + 1              内部発光コア（glowCores。全ピース分をまとめた 1 つの InstancedMesh）
 //   + 1              解答空間の枠（createSolutionFrame の LineSegments）
@@ -330,7 +330,7 @@ export function createPieceViews(
         throw new Error(`ピース id ${placement.pieceId} の配置が重複している`);
       }
       seen.add(placement.pieceId);
-      // 動いていないピースは行列を書き直さない。N=7 / M=40 でも 1 手あたりの更新が 1 ピース分で済む
+      // 動いていないピースは行列を書き直さない。N=7 / M=27 でも 1 手あたりの更新が 1 ピース分で済む
       const previous = lastPlacements.get(placement.pieceId);
       const unchanged =
         previous !== undefined &&

@@ -73,12 +73,12 @@ function worldVoxels(pieces: readonly Piece[], placements: readonly Placement[])
 }
 
 describe('maxPieces', () => {
-  it('SPEC.md 3.1 の目安（N=3 で 6、N=7 で 40）に一致する', () => {
-    expect(maxPieces(3)).toBe(6);
-    expect(maxPieces(4)).toBe(16);
-    expect(maxPieces(5)).toBe(31);
-    expect(maxPieces(6)).toBe(40);
-    expect(maxPieces(7)).toBe(40);
+  it('SPEC.md 3.1 の上限 N + 4(N−2) に一致する', () => {
+    expect(maxPieces(3)).toBe(7);
+    expect(maxPieces(4)).toBe(12);
+    expect(maxPieces(5)).toBe(17);
+    expect(maxPieces(6)).toBe(22);
+    expect(maxPieces(7)).toBe(27);
   });
 
   it('どの N でも下限 2 以上で N³ 以下', () => {

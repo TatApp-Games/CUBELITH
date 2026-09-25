@@ -180,7 +180,7 @@ export function snapCandidate(
   if (activeVoxels.length === 0) return null;
 
   // 相手のボクセルは候補ごとに変わらないので、集合と外接ボックスは 1 度だけ作って使い回す
-  // （N=7 / M=40 でドラッグ中に毎回呼ばれても重くならないように）
+  // （N=7 / M=27 でドラッグ中に毎回呼ばれても重くならないように）
   const occupied = new Set<string>();
   for (const v of others) occupied.add(voxelKey(v.x, v.y, v.z));
   const otherBox = boundingBox(others);

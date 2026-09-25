@@ -21,9 +21,6 @@ export const MAX_SPACE_SIZE = 7;
 /** 分割数 M の下限（SPEC.md 3.1）。 */
 export const MIN_PIECE_COUNT = 2;
 
-// 分割数の絶対上限。maxPieces() のコメントを参照。
-const PIECE_COUNT_CAP = 40;
-
 // 未割り当てのボクセルを表す owner の値。
 const UNASSIGNED = -1;
 
@@ -78,15 +75,14 @@ function assertSeed(seed: number): void {
 }
 
 /**
- * 空間サイズ N に対して選べる分割数 M の上限。
+ * 空間サイズ N に対して選べる分割数 M の上限（SPEC.md 3.1）。
  *
- * 解釈: SPEC.md 3.1 は「2 〜 N³ / 4 程度」としつつ、N=3 で 2〜6、N=7 で 2〜40 を目安に挙げている。
- * 後者は N³/4 = 85 と合わないので、両方を満たす min(floor(N³/4), 40) を上限として採用する
- * （N=3 → 6、N=4 → 16、N=5 → 31、N=6 → 40、N=7 → 40）。
+ * M のプリセットは N から N−2 刻みの 5 段なので、上限はその最大値 N + 4(N−2) = 5N − 8
+ * （N=3 → 7、N=4 → 12、N=5 → 17、N=6 → 22、N=7 → 27）。
  */
 export function maxPieces(n: number): number {
   assertSpaceSize(n);
-  return Math.min(Math.floor(n ** 3 / 4), PIECE_COUNT_CAP);
+  return 5 * n - 8;
 }
 
 /** M が 2..maxPieces(n) の整数であることを確かめる。 */
