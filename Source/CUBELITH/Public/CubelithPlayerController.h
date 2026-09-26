@@ -25,6 +25,9 @@
 // Cubelith::FSnapMotion）。候補がある間の薄い発光は ACubelithPuzzleActor::SetSnapHint（RULES.md 5.1）、
 // 吸着した瞬間の効果音は ACubelithGameMode::PlaySnapSound へ回す。
 //
+// クリアすると ACubelithGameMode がピースの操作だけを止める（SetPieceInputEnabled）。カメラの旋回と
+// ズームは残す（RULES.md 5.2-4 の扱いはその宣言の「解釈:」）。
+//
 // 解釈: RULES.md 3.3 は回転の手段として「2 本指スワイプ / ひねり、回転モードのドラッグ、または
 // 回転ギズモ」を挙げているが、**回転ギズモは作らない**（要望が置き換えを求めているのは
 // 「マウスで回転を確かめる仮の手段 → HUD の回転モードのトグル」だけ）。足すかは後の段階で人が決める。
@@ -140,6 +143,23 @@ public:
 	 * 固定・ヒント・散らし直し・クリアのときに ACubelithGameMode が呼ぶ（main.ts の exitRotateMode）
 	 */
 	void ExitRotateMode();
+
+	/**
+	 * ピースの操作を受け付けるかを切り替える（クリアしたら止める。ACubelithGameMode::ShowClear が呼ぶ）。
+	 *
+	 * 止めると、ピースの選択・ドラッグ移動・回転モードのドラッグ・2 本指の 90 度回転・
+	 * 離したときのスナップがどれも効かなくなる。**カメラの旋回とズームは残す**
+	 * （解釈: RULES.md 5.2-4 の「操作は無効化」とカメラの自動旋回はクリア演出（U5）の一部なので、
+	 * この段階ではピースの操作だけを止める）。
+	 *
+	 * 止めるときは、走っている回転モードのねじれ（自由回転）を最寄りの向きで確定させ、スナップの補間を
+	 * 打ち切って表示上のずれを戻し、ピースの選択も解く（クリアした形が歪んだまま・ずれたまま残らないように）。
+	 * 受け付ける側へ戻すのは新しい盤面を作るとき（ResetForNewSession）なので、呼ぶ側は止める側だけを使う
+	 */
+	void SetPieceInputEnabled(bool bEnabled);
+
+	/** ピースの操作を受け付けるか（クリア画面を出している間だけ false） */
+	bool IsPieceInputEnabled() const { return bPieceInputEnabled; }
 
 	/**
 	 * そのピースに走っているスナップの補間を打ち切る（RULES.md 3.5 の見た目の追いつき）。
@@ -372,6 +392,12 @@ private:
 	 * （ドラッグを始めるときに固定を見る。hud.ts の render もそのときラベルを「回転」へ戻す）
 	 */
 	bool bRotateModeOn = false;
+
+	/**
+	 * ピースの操作を受け付けるか（SetPieceInputEnabled）。クリアしている間だけ false になる。
+	 * ResetForNewSession が true へ戻す ＝ 盤面を作り直せば必ず操作できる
+	 */
+	bool bPieceInputEnabled = true;
 
 	/** 2 本指ジェスチャの状態機械（ピンチか 90 度回転かを判定する。移植元 twoFingerGesture.ts） */
 	Cubelith::FTwoFingerGesture Gesture;

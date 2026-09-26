@@ -1,5 +1,6 @@
 // ゲームの既定の GameMode。既定の Pawn を軌道カメラ（ACubelithOrbitPawn）にし、
-// 起動するとタイトル / 難易度選択画面を出し、「開始」でパズル 1 回分（= セッション）を作る（Docs/SPEC_UE.md 8 章 U4）
+// 起動するとタイトル / 難易度選択画面を出し、「開始」でパズル 1 回分（= セッション）を作り、
+// クリアするとクリア画面を出してタイトル / 作り直しへ戻す（RULES.md 2 章のコアゲームループ。Docs/SPEC_UE.md 8 章 U4）
 // Config/DefaultEngine.ini の GlobalDefaultGameMode がこのクラスを指している
 
 #pragma once
@@ -18,6 +19,7 @@
 
 class ACubelithPlayerController;
 class ACubelithPuzzleActor;
+class UCubelithClearWidget;
 class UCubelithHudWidget;
 class UCubelithScreenWidget;
 class USoundBase;
@@ -43,7 +45,7 @@ enum class ECubelithScreen : uint8
 	Title,
 	/** プレイ中（HUD。RULES.md 6 章） */
 	Play,
-	/** クリア（後続タスク） */
+	/** クリア（RULES.md 6 章の「もう一度」「難易度を変える」） */
 	Clear,
 };
 
@@ -73,9 +75,6 @@ class CUBELITH_API ACubelithGameMode : public AGameModeBase
 
 public:
 	ACubelithGameMode();
-
-	/** クリアの仮表示を出し続けるためだけの Tick（クリアしている間だけ有効になる） */
-	virtual void Tick(float DeltaSeconds) override;
 
 	/**
 	 * ゲーム状態（RULES.md 3.3 / 3.4）。セッションが無ければ nullptr。
@@ -247,7 +246,10 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Cubelith|UI")
 	TSubclassOf<UCubelithScreenWidget> PlayWidgetClass;
 
-	/** クリア画面（RULES.md 6 章）のクラス。**後続タスクで足すので既定は空** */
+	/**
+	 * クリア画面（RULES.md 6 章）のクラス（既定は C++ の UCubelithClearWidget）。
+	 * 人が UMG のウィジェットブループリントを作ったらここを差し替える（手順は Docs/SPEC_UE.md 4 章）
+	 */
 	UPROPERTY(EditAnywhere, Category = "Cubelith|UI")
 	TSubclassOf<UCubelithScreenWidget> ClearWidgetClass;
 
@@ -346,19 +348,28 @@ private:
 	void StartFrameCamera();
 
 	/**
-	 * クリア判定（RULES.md 3.4）の結果を画面とログに反映する。
+	 * クリア判定（RULES.md 3.4）の結果を受け取る。
 	 *
 	 * 判定そのものは Cubelith::FGame が更新のたびに走らせていて、ここはその結果を受け取るだけ
-	 * （判定のロジックは足さない・変えない）。false → true に変わったときに LogCubelith へ 1 行出し、
-	 * クリアしている間はずっと見えるよう画面に仮の表示を出す。本実装の UI は後続タスク、演出は U5
+	 * （判定のロジックは足さない・変えない）。**偽 → 真に変わったときだけ**（= 一度だけ）
+	 * LogCubelith へ 1 行出して ShowClear を通す。真 → 偽はセッションを畳んだときに通る
 	 */
-	void UpdateSolvedDisplay(bool bSolved);
+	void HandleSolvedChanged(bool bInSolved);
+
+	/**
+	 * クリア画面へ切り替える（RULES.md 2 章 5 / 6 章）。
+	 *
+	 * プレイ中 HUD を外してクリア画面を出し、ピースの操作を止める
+	 * （ACubelithPlayerController::SetPieceInputEnabled。カメラの旋回とズームは残す）。
+	 * 「もう一度」は RestartWithNewSeed、「難易度を変える」は ReturnToTitle へ繋ぐ。演出は U5
+	 */
+	void ShowClear();
 
 	/** 操作しているプレイヤーのコントローラ（ACubelithPlayerController でなければ nullptr） */
 	ACubelithPlayerController* GetCubelithPlayerController() const;
 
-	/** クリアの仮表示を出しているか（= 直近に受け取ったクリア判定の結果） */
-	bool bSolvedShown = false;
+	/** 直近に受け取ったクリア判定の結果（偽 → 真の変わり目で一度だけクリア画面を出すために持つ） */
+	bool bSolved = false;
 
 	/**
 	 * 今のセッションの生成結果（Pieces と Solution・N / M / シード）。セッションが無ければ既定値。

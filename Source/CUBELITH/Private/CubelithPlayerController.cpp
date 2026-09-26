@@ -114,6 +114,13 @@ void ACubelithPlayerController::PlayerTick(float DeltaTime)
 
 void ACubelithPlayerController::PollPointer()
 {
+	if (!bPieceInputEnabled)
+	{
+		// クリアしている間はピースの操作を受け付けない（SetPieceInputEnabled）。
+		// カメラの旋回とズームは ACubelithOrbitPawn が自分で入力を読むのでそのまま効く
+		return;
+	}
+
 	// Enhanced Input の InputAction / InputMappingContext は .uasset なので使わず、生の入力状態を毎フレーム読む
 	// （Docs/SPEC_UE.md 0 章）。入力マッピング（Config/DefaultInput.ini）にも依存しない
 	double Touch1X = 0.0;
@@ -507,6 +514,9 @@ void ACubelithPlayerController::ResetForNewSession()
 
 	SelectedPieceId = INDEX_NONE;
 
+	// クリアで止めたピースの操作は、新しい盤面では必ず受け付ける状態に戻す（SetPieceInputEnabled）
+	bPieceInputEnabled = true;
+
 	// 次に使うときに新しい盤面のピースで作り直させる（ヘッダの「解釈:」のとおり形が変わる）
 	SnapControlPieceCount = 0;
 	// 走っている補間は打ち切る。表示上のずれを戻す相手（前の盤面のアクタ）はこの後すぐ消えるので流さない
@@ -521,6 +531,51 @@ void ACubelithPlayerController::CommitFreeRotation()
 {
 	// 掛かっていなければ CommitRotateDrag が自分で弾く（DragMode が RotatePiece 以外なら何もしない）
 	CommitRotateDrag();
+}
+
+void ACubelithPlayerController::SetPieceInputEnabled(bool bEnabled)
+{
+	if (bPieceInputEnabled == bEnabled)
+	{
+		return;
+	}
+	bPieceInputEnabled = bEnabled;
+
+	UE_LOG(LogCubelith, Log, TEXT("ピースの操作を%s（カメラの旋回とズームはそのまま）"),
+		bEnabled ? TEXT("受け付けるようにした") : TEXT("止めた"));
+
+	if (bEnabled)
+	{
+		return;
+	}
+
+	// 走っている回転モードのねじれは最寄りの向きで確定させる（表示だけねじれた形を残さない。
+	// main.ts の showClear が exitRotateMode を通すのと同じ）
+	ExitRotateMode();
+
+	// 走っているドラッグを畳む（EndDrag がカメラの旋回の可否も戻す）
+	EndDrag();
+
+	// 2 本指のジェスチャを追っていたら手放す。乗っ取っていたピンチは Pawn へ返す（ズームは止めない）
+	if (bTwoFingerActive)
+	{
+		bTwoFingerActive = false;
+		if (ACubelithOrbitPawn* const OrbitPawn = GetOrbitPawn())
+		{
+			OrbitPawn->bTouchPinchEnabled = true;
+		}
+	}
+
+	// 走っているスナップの補間は表示上のずれを戻して打ち切る（ピースが論理上の位置からずれたまま見えないように）
+	CancelAllSnapMotion();
+
+	// 選択を解く（選択の強調とスナップ候補の発光が消え、カメラの旋回も戻る。
+	// main.ts の showClear が input.select(null) を通すのと同じ）
+	SetSelectedPiece(INDEX_NONE);
+
+	// 押しっぱなしの指 / ボタンを、操作を受け付けに戻したときに「押した瞬間」として拾わない
+	bWasTouchDown = false;
+	bWasMouseDown = false;
 }
 
 void ACubelithPlayerController::CancelSnapMotionFor(int32 PieceId)

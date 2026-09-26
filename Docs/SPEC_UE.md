@@ -38,7 +38,7 @@
 | 入力（`src/input/`） | ライントレースでピースを選ぶ。純粋関数（`axisMapping` / `twoFingerGesture` など）はテストごと C++ へ移す。U2 のカメラ操作は、`InputMappingContext` / `InputAction` が `.uasset`（0 章）なので Enhanced Input を使わず、Tick で `APlayerController` から入力状態をポーリングして読む。人がアセットを作る段になれば Enhanced Input へ移せる。U3 で `ACubelithPlayerController` として実装（`PlayerTick` でのポーリング入力・押した瞬間のライントレースでのピックと選択・ドラッグでのグリッド移動・2 本指の 90 度回転）。`src/input` の純粋関数は `CubelithPickSamples` / `CubelithAxisMapping` / `CubelithTwoFingerGesture` / `CubelithFreeRotation` / `CubelithRotateInput`（`Source/CUBELITH/Public`）へ移した。回転中の 90 度に縛らない見せ方は `ACubelithPuzzleActor::SetFreeRotation`。**回転は HUD の回転モードのトグル**（RULES.md 6 章）で出入りし、オンの間は選択中のピースへのドラッグ（マウスの左ボタンでも指でも同じ）が自由回転になって、離した時点で最寄りの向きへ確定する（`SetRotateMode` / `ToggleRotateMode` / `ExitRotateMode`。U3 の「マウスの右ボタンのドラッグ」という仮の手段は U4 でこれに置き換え、右ボタンには何も紐づけていない）。**回転ギズモは作らない**（下の「プレイ中 HUD」節の「解釈:」）。U4 で手を離したときのマグネット・スナップ（`HandlePointerReleased` → `Cubelith::FSnapControl` / `Cubelith::FSnapMotion`）を足した（下の「スナップ」節） | AI（感度の調整は人） |
 | スナップの効果音（RULES.md 3.5） | MetaSounds（音そのものは人が作る）。鳴らす口は AI 側にあり、`ACubelithGameMode::SnapSound`（`UPROPERTY(EditAnywhere, Category = "Cubelith|Audio")` の `TObjectPtr<USoundBase>`）に割り当てると `ACubelithGameMode::PlaySnapSound` が `UGameplayStatics::PlaySound2D` で鳴らす。**割り当てが無ければ鳴らない**（警告も出さない）。差し替え方は下の「スナップ」節 | 人と AI |
 | クリア演出（RULES.md 5.2） | 発光は Material Parameter Collection、パーティクルは Niagara（原典 5.2）、カメラの旋回は C++ | 人と AI |
-| UI（RULES.md 6 章） | UMG。**振る舞いは C++ の基底クラス**（`UCubelithScreenWidget` と `BindWidgetOptional`）、**レイアウトは人が作る**。人のレイアウトが無い間は C++ だけで組んだ仮の画面を出す（下の「画面（UI）」節）。縦持ちの画面に合わせ、ボタンは 44 px 以上。U4 でタイトル / 難易度選択と画面の切り替え・セッションの作り直し・プレイ中 HUD（残りピース数・回転モードのトグル・「固定 / 固定解除」・「散らし直す」・「ヒント」・「次の問題」・「難易度へ戻る」。出す / 押せるの条件は RULES.md 6 章のとおりで、判断は `Cubelith::ResolveHudDisplay`）が入った。HUD は**画面下部**に寄せる（`ConstructBottomPanelRoot`）。残るのはクリア画面 | 人と AI |
+| UI（RULES.md 6 章） | UMG。**振る舞いは C++ の基底クラス**（`UCubelithScreenWidget` と `BindWidgetOptional`）、**レイアウトは人が作る**。人のレイアウトが無い間は C++ だけで組んだ仮の画面を出す（下の「画面（UI）」節）。縦持ちの画面に合わせ、ボタンは 44 px 以上。U4 でタイトル / 難易度選択と画面の切り替え・セッションの作り直し・プレイ中 HUD（残りピース数・回転モードのトグル・「固定 / 固定解除」・「散らし直す」・「ヒント」・「次の問題」・「難易度へ戻る」。出す / 押せるの条件は RULES.md 6 章のとおりで、判断は `Cubelith::ResolveHudDisplay`）とクリア画面（「もう一度」「難易度を変える」。下の「クリア画面」節）が入り、RULES.md 2 章のコアゲームループが一巡するようになった。HUD とクリア画面は**画面下部**に寄せる（`ConstructBottomPanelRoot`）。クリア演出は U5 | 人と AI |
 | セーブ（RULES.md 3.8） | `USaveGame` を `UGameplayStatics::SaveGameToSlot` で保存する。保存先・保存する形・壊れたデータの扱いは下の「セーブ」節。盤面が変わるたびと、アプリがバックグラウンドに入るとき（`FCoreDelegates` のアプリのライフサイクルの通知）に書く。モバイルでは裏に回ったアプリが OS に終了させられることがあるため | AI |
 | ライティング（原典 4.1） | ディレクショナルライト 1 灯 + HDRI | 人 |
 
@@ -154,7 +154,7 @@ RULES.md 2 章のコアゲームループと 6 章の画面を UMG で作る。*
 | 部品の受け取り | `UPROPERTY(meta = (BindWidgetOptional))`。**`BindWidget` ではなく必ず Optional にする**（埋まっていない部品は触らないだけなので、人のレイアウトに一部が無くても落ちない） |
 | 振る舞いの置き場所 | `BindBehavior`。仮の画面でも人のレイアウトでも呼ばれるので、**押したときの処理はここだけに書く**（仮のレイアウトを組むときには結ばない） |
 | ボタン 1 個 | `ConstructButton(親, ラベル, 押したときの処理, 最小の横幅)`。指で押せる大きさ（RULES.md 6 章の 44 px 以上 = `Cubelith::MinTouchTargetPx`）を `USizeBox` で確保する。HUD・クリア画面でも同じヘルパを使う |
-| 画面のどこに寄せるか | `ConstructCenteredPanelRoot`（中央寄せ。タイトル / クリア）と `ConstructBottomPanelRoot`（**画面下部**に寄せて横幅いっぱい。HUD。RULES.md 6 章の「スマホでは HUD を画面下部に寄せ」）。作りは同じ（Overlay → Border → VerticalBox）で、パネルを置く位置だけが違う |
+| 画面のどこに寄せるか | `ConstructCenteredPanelRoot`（中央寄せ。タイトル）と `ConstructBottomPanelRoot`（**画面下部**に寄せて横幅いっぱい。HUD とクリア画面。RULES.md 6 章の「スマホでは HUD を画面下部に寄せ」と、`clearScreen.ts` の `screen--bottom`）。作りは同じ（Overlay → Border → VerticalBox）で、パネルを置く位置だけが違う |
 | ラムダを結ぶ仕組み | `UButton::OnClicked` は動的デリゲートで `UFUNCTION` しか結べないので、`UCubelithButtonAction`（`UFUNCTION` 1 つと `TFunction<void()>` 1 つを持つ小さな `UObject`）を挟む。これで「N = 4 のボタン」のように値ごとに違う処理をラムダで書ける。寿命は画面のウィジェットが握る |
 | その他のヘルパ | `ConstructText`・`ConstructRow`・`SetButtonSelected`（選択を色で見せる）・`SetTextSafe`・`SetButtonLabel`（ラベルを入れ替える。HUD の「回転 / 回転解除」「固定 / 固定解除」）・`SetButtonVisible` / `SetWidgetVisible`（出す / 隠す。隠すときは場所も取らない `Collapsed`） |
 
@@ -167,20 +167,20 @@ RULES.md 2 章のコアゲームループと 6 章の画面を UMG で作る。*
 |---|---|---|
 | タイトル / 難易度選択（RULES.md 6 章） | `UCubelithTitleWidget`（`CubelithTitleWidget.h`） | 入っている。N（3〜7）・M のプリセット・パズルの回転・シードの表示・「開始」。**「続きから」とクリア回数の表示は後続タスク** |
 | プレイ中の HUD（RULES.md 6 章） | `UCubelithHudWidget`（`CubelithHudWidget.h`） | 入っている。残りピース数・回転モードのトグル・「固定 / 固定解除」・「散らし直す」・「ヒント」・「次の問題」・「難易度へ戻る」（下の「プレイ中 HUD」節） |
-| クリア | — | 後続タスク（`ClearWidgetClass` が空） |
+| クリア（RULES.md 2 章 5 / 6 章） | `UCubelithClearWidget`（`CubelithClearWidget.h`） | 入っている。`CLEAR` の見出し・遊んだ盤面の条件（N / M / パズルの回転 / シード）・「もう一度」・「難易度を変える」（下の「クリア画面」節）。**クリア演出（RULES.md 5.2）は U5** |
 
 - **解釈: ウィジェットの生成・`AddToViewport`・`RemoveFromParent` は `ACubelithGameMode` 1 箇所にまとめる**（`ACubelithPlayerController` ではない）。どの画面を出すかは「セッションが有るか・クリアしたか」= GameMode が持つ状態で決まり、画面の入れ替えとセッションの作り直しを同じ場所で行えると順序の取り違えが起きないため。人が差し替える口（`TSubclassOf`）も効果音（`SnapSound`）と同じ場所に集まる
-- 今どの画面かは `ECubelithScreen`（`None` / `Title` / `Play` / `Clear`。`screens.ts` の `ScreenName`）。切り替えは `ACubelithGameMode::BeginScreen` が**前の画面を必ず `RemoveFromParent` してから**作る（`screens.ts` の `show` が前の画面を `dispose` するのと同じ）。クラスが空の画面は「前の画面を外すだけ」になるので、クリア画面（`ClearWidgetClass`）を後から載せられる
+- 今どの画面かは `ECubelithScreen`（`None` / `Title` / `Play` / `Clear`。`screens.ts` の `ScreenName`）。切り替えは `ACubelithGameMode::BeginScreen` が**前の画面を必ず `RemoveFromParent` してから**作る（`screens.ts` の `show` が前の画面を `dispose` するのと同じ）。3 つの画面（`TitleWidgetClass` / `PlayWidgetClass` / `ClearWidgetClass`）はどれも C++ のクラスが既定で入っている。クラスが空の画面は「前の画面を外すだけ」になるので、画面を 1 つずつ載せていける
 - 入力は `ACubelithPlayerController::BeginPlay` で `FInputModeGameAndUI` にしてある（画面のボタンとゲームの操作を同時に効かせる。マウスを掴むのは押している間だけなので、カメラの旋回とピースのドラッグはそのまま通る。カーソルは掴んでいる間も出したまま）
 
 **人が UMG へ差し替える手順**
 
 1. エディタで Widget Blueprint を作り、親クラスに差し替えたい画面の C++ クラス（タイトルなら `CubelithTitleWidget`）を選ぶ
-2. その C++ クラスの `BindWidgetOptional` と**同じ名前・代入できる型**で部品を置く。タイトルは `TitleText`・`LeadText`（`UTextBlock`）、`SpaceSizeRow`・`PieceCountRow`・`RotationRow`（`UPanelWidget`。`UHorizontalBox` などでよい）、`SummaryText`・`SeedText`（`UTextBlock`）、`StartButton`（`UButton`）。HUD は下の「プレイ中 HUD」節の表のとおり。名前が合っていれば C++ がそこへ値と処理を流す。要らない部品は置かなくてよい（`SummaryText` が無ければまとめの行が出ないだけ）
+2. その C++ クラスの `BindWidgetOptional` と**同じ名前・代入できる型**で部品を置く。タイトルは `TitleText`・`LeadText`（`UTextBlock`）、`SpaceSizeRow`・`PieceCountRow`・`RotationRow`（`UPanelWidget`。`UHorizontalBox` などでよい）、`SummaryText`・`SeedText`（`UTextBlock`）、`StartButton`（`UButton`）。HUD は下の「プレイ中 HUD」節、クリア画面は「クリア画面」節の表のとおり。名前が合っていれば C++ がそこへ値と処理を流す。要らない部品は置かなくてよい（`SummaryText` が無ければまとめの行が出ないだけ）
 3. 選択肢のボタン（N / M / 回転）は**数が N で変わるので C++ が並べる**。人が置くのは入れ物（`SpaceSizeRow` など）だけで、中身は C++ が作って入れ替える
-4. `ACubelithGameMode` の Blueprint 派生（効果音の割り当てと同じもの）で `TitleWidgetClass`（HUD なら `PlayWidgetClass`。カテゴリ `Cubelith|UI`）を作ったウィジェットブループリントに差し替える。`Config/DefaultEngine.ini` の `GlobalDefaultGameMode` がその Blueprint を指していること
-5. 根の部品が無い（何も置いていない）ウィジェットブループリントを指した場合は、仮のレイアウト（C++）に落ちる。`StartButton` が無いと「開始」を押せない・HUD の `BackToTitleButton` が無いと盤面から出られないので、どちらも `LogCubelith` に警告が出る
-6. 差し替えたクラスがその画面の C++ クラス（`UCubelithTitleWidget` / `UCubelithHudWidget`）の派生でなければ、値も処理も結べないので**その画面を出さず** `LogCubelith` にエラーを出す
+4. `ACubelithGameMode` の Blueprint 派生（効果音の割り当てと同じもの）で `TitleWidgetClass`（HUD なら `PlayWidgetClass`、クリア画面なら `ClearWidgetClass`。カテゴリ `Cubelith|UI`）を作ったウィジェットブループリントに差し替える。`Config/DefaultEngine.ini` の `GlobalDefaultGameMode` がその Blueprint を指していること
+5. 根の部品が無い（何も置いていない）ウィジェットブループリントを指した場合は、仮のレイアウト（C++）に落ちる。`StartButton` が無いと「開始」を押せない・HUD の `BackToTitleButton` が無いと盤面から出られない・クリア画面に `RetryButton` も `BackToTitleButton` も無いとクリアした盤面から出られないので、どれも `LogCubelith` に警告が出る
+6. 差し替えたクラスがその画面の C++ クラス（`UCubelithTitleWidget` / `UCubelithHudWidget` / `UCubelithClearWidget`）の派生でなければ、値も処理も結べないので**その画面を出さず** `LogCubelith` にエラーを出す
 
 **セッション（パズル 1 回分）**
 
@@ -192,7 +192,7 @@ RULES.md 2 章のコアゲームループと 6 章の画面を UMG で作る。*
 | `ReturnToTitle()` | 直前の難易度が選ばれた状態でタイトルへ戻る（シードは引き直す。RULES.md 2 章の「難易度を変える」「難易度へ戻る」） |
 | `StartSession(N, M, 回転, シード)` | 生成 → 初期散らし → `Cubelith::FGame` → `ACubelithPuzzleActor` → 軌道カメラの距離合わせ → プレイ中の画面へ。N は 3..7、M は N ごとのプリセットへ寄せる |
 | `RestartWithNewSeed()` | 同じ難易度でシードだけ引き直して作り直す（RULES.md 2 章の「もう一度」「次の問題」） |
-| `EndSession()` | タイマー・ピースのアクタ・ゲーム状態・クリアの仮表示を畳み、`ACubelithPlayerController::ResetForNewSession` で選択・ドラッグ・スナップも白紙に戻す |
+| `EndSession()` | タイマー・ピースのアクタ・ゲーム状態・クリアの状態を畳み、`ACubelithPlayerController::ResetForNewSession` で選択・ドラッグ・スナップ・ピースの操作の可否も白紙に戻す |
 | `DrawRandomSeed()` | 新しいシードを引く（`difficulty.ts` の `randomSeed`。時刻と呼んだ回数で撒いた `FRandomStream` から 32 bit） |
 
 - セッションの間は生成結果（`Cubelith::FGeneratedPuzzle` の `Pieces` と `Solution`・N / M / シード）とパズルの回転をメンバに持つ（`GetSessionPuzzle` / `GetSessionSeed` / `GetSessionSpaceSize` / `GetSessionPieceCount` / `IsRotationAllowed` / `HasSession`）。後続タスクのヒントが `Solution`、散らし直しが同じシード、セーブが難易度とシードを読む
@@ -274,7 +274,7 @@ HUD を出していない画面（タイトル / クリア）では何もしな�
 
 - オンの間は、選択中のピースを押したドラッグが移動ではなく**自由回転**になる（90 度に縛らずに見せ、離した時点で最寄りの向きへ確定する）。確定は U3 の `CommitRotateDrag`（`Cubelith::SnappedOrientation` → `Cubelith::FGame::Place` → `ACubelithPuzzleActor::ClearFreeRotation`）をそのまま通る。**マウスの左ボタンでも指でも同じように働く**
 - 入れる条件は `SetRotateMode`: パズルの回転「あり」・ピースを選んでいる・そのピースが固定されていない。入れたかどうかは戻り値で返し、`RefreshHud` がラベル（「回転 / 回転解除」）へ反映する（`main.ts` の `onToggleRotateMode` と同じ形）
-- **抜けるときは必ず表示だけのねじれを解く**（`ExitRotateMode` が `CommitRotateDrag` を通す）。通る経路は、トグルで抜ける・選択が変わる（`SetSelectedPiece`）・固定する（`ToggleLock`）・散らし直す（`ScatterAgain`）・クリアする（`UpdateSolvedDisplay`）・セッションを作り直す（`ResetForNewSession`）
+- **抜けるときは必ず表示だけのねじれを解く**（`ExitRotateMode` が `CommitRotateDrag` を通す）。通る経路は、トグルで抜ける・選択が変わる（`SetSelectedPiece`）・固定する（`ToggleLock`）・散らし直す（`ScatterAgain`）・クリアする（`ShowClear` → `SetPieceInputEnabled(false)`）・セッションを作り直す（`ResetForNewSession`）
 - 固定中のピースを選んでいる間はフラグが立っていてもドラッグは回らない（ドラッグを始めるときに固定を見る）。HUD もそのときラベルを「回転」へ戻す（`hud.ts` の `rotating` と同じ扱い）
 - 2 本指（タッチ）の 90 度回転（U3）はそのまま残す。ただし**回転モード中は 90 度回転を行わない**（回転はモード中のドラッグへ一本化する。`pieceInput.ts` の `applyTwoFinger` と同じ）。ピンチのズームはどちらでも効く
 - 解釈: RULES.md 3.3 は回転の手段として「2 本指スワイプ / ひねり、回転モードのドラッグ、**または**回転ギズモ」を挙げているが、**回転ギズモは作らない**（U4 の範囲は「マウスで回転を確かめる仮の手段 → HUD の回転モードのトグル」の置き換えまで）。足すかは後の段階で人が決める
@@ -283,6 +283,51 @@ HUD を出していない画面（タイトル / クリア）では何もしな�
 Automation Test は `CUBELITH.Render.HudState.*`（上の「出す / 押せる の条件」とラベル・案内の文・残りピース数の文字）。
 **ウィジェットもアクタも立てない**（判断を純粋関数へ切り出してあるので、状態を渡すだけで確かめられる）。
 並びや色・実機での押しやすさと回転の手触りは機械判定できないので、人がエディタで確認する（9 章）。
+
+### クリア画面
+
+RULES.md 2 章 5 と 6 章の「クリア画面」。クリア判定（RULES.md 3.4）が真になった時点でプレイ中 HUD に代わって出し、
+「もう一度」（難易度はそのままシードだけ引き直して作り直す）と「難易度を変える」（タイトルへ戻る）で
+**コアゲームループが一巡する**。画面の作りは上の「画面（UI）」節の仕組みに乗っていて、**振る舞いは
+`UCubelithClearWidget`**（`Source/CUBELITH/Public/CubelithClearWidget.h`）、
+**画面の切り替えとピースの操作の停止は `ACubelithGameMode::ShowClear`**。
+移植元は Web 版の `WebMock/src/ui/clearScreen.ts` と `WebMock/src/main.ts` の `showClear`。
+
+仮のレイアウトは**画面下部**へ寄せ（`ConstructBottomPanelRoot`。組み上がった立方体を隠さないため。
+`clearScreen.ts` の `screen--bottom` と同じ）、上から「`CLEAR` の見出し / 遊んだ盤面の条件 /
+「もう一度」「難易度を変える」の行 / シード」の 4 段に並べる。ボタンはどちらも 44 px 以上（`ConstructButton`）。
+
+**部品**（`BindWidgetOptional`。人が UMG で置くときの名前）
+
+| 部品 | 型 | 役目 |
+|---|---|---|
+| `BannerText` | `UTextBlock` | クリアの見出し（既定は `CLEAR`。`clearScreen.ts` の `#clear-banner`） |
+| `SummaryText` | `UTextBlock` | 遊んだ盤面の条件（`N = 3 / M = 4 / 回転なし を組み上げた`） |
+| `RetryButton` | `UButton` | 「もう一度」 |
+| `BackToTitleButton` | `UButton` | 「難易度を変える」 |
+| `SeedText` | `UTextBlock` | シードの表示（小さく。タイトルと同じ形） |
+
+- 条件は `SetBoardSummary(N, M, 回転, シード)` で渡す（`ShowClear` が今のセッションの値をそのまま渡す）。丸めや寄せはしない
+- 解釈: 出す条件に**パズルの回転**を加えた（`clearScreen.ts` は N / M とシードだけ）。RULES.md には無い項目だが、同じ盤面を開き直せるようにするため（文言はタイトルのまとめの行と揃えた）
+
+**クリアしたときの流れ**（`ACubelithGameMode`）
+
+| 順 | すること |
+|---|---|
+| 1 | `Cubelith::FGame` の `OnChange` が渡すクリア判定を `HandleSolvedChanged` が受け取る。**偽 → 真の変わり目だけ**を拾うので、同じクリアで画面を作り直さない（`main.ts` の `finished` と同じ役目）。判定そのものは `CUBELITHCore` が持つままで、ここでは足さない・変えない |
+| 2 | `ShowClear` が `ACubelithPlayerController::SetPieceInputEnabled(false)` で**ピースの操作を止める**。その中で走っている回転モードのねじれ（自由回転）を最寄りの向きで確定させ、ドラッグと 2 本指を畳み、スナップの補間の表示上のずれを戻し、ピースの選択も解く（クリアした形が歪んだまま・ずれたまま残らないように） |
+| 3 | `BeginScreen(ECubelithScreen::Clear)` が HUD を外してクリア画面を作り、条件を流して「もう一度」→ `RestartWithNewSeed`、「難易度を変える」→ `ReturnToTitle` を結んでから `AddToViewport` |
+
+- **解釈: 止めるのはピースの操作だけで、カメラの旋回とズームは残す**（自動旋回も付けない）。RULES.md 5.2-4 の「操作は無効化」と「カメラが自動でゆっくり旋回する」はクリア演出の一部なので、発光・融合・パーティクルと一緒に U5 で入れる
+- ピースの操作を受け付ける状態へ戻すのは `ACubelithPlayerController::ResetForNewSession`（= `EndSession`）だけ ＝ 「もう一度」でも「難易度を変える」でも、盤面を作り直せば必ず操作できる。どちらも `EndSession` を通るので、前の盤面のピース・鍵アイコン・スナップの状態は残らない
+- `HandleSolvedChanged` は `StartSession` でも**HUD を出した後に**1 回通す（`Cubelith::FGame` は構築時に判定を走らせるが `OnChange` を呼ばないため）。散らした直後がクリアになることは普通は無いが、万一そうなってもクリア画面が HUD を置き換えて残る
+- **U3 のクリアの仮表示（画面のデバッグメッセージ `AddOnScreenDebugMessage` と、それを出し続けるためだけに回していた `Tick`）は外した**。クリアを `LogCubelith` に 1 行出すのは残してある
+- クリア回数の記録と「クリアした盤面を『続きから』に出さない」こと（RULES.md 3.8）は、セーブの保存のタイミングと同じ後続タスク（上の「セーブ」節の「まだ繋いでいないこと」）
+
+Automation Test は `CUBELITH.Render.ClearWidget.*`（仮のレイアウトに 2 つのボタンが組まれること・
+遊んだ盤面の条件とシードが出ること・押すとそれぞれのデリゲートが 1 回だけ呼ばれること）。
+作りはタイトルのテストと同じで Slate の実体は作らない。画面の見え方と、クリアしてから一巡する流れは
+機械判定できないので、人がエディタで確認する（9 章）。
 
 ## 7. 技術構成
 
@@ -424,8 +469,8 @@ RULES.md 3.1 の 3 項目を、シードと同じ 3 通りの方法で指定で�
 | U0 | 雛形: `.uproject` と C++ モジュール 2 つ（7.1）・テスト、`.gitignore` / `.gitattributes`（7.4）、エディタの MCP（7.6）、UE 用の CLAUDE.md（`Source/CLAUDE.md`。コマンド・開発ルール・タスクの切り方）。2026-09-26 に完了 | 人と AI | コマンドラインでビルドとテストが通る |
 | U1 | ゲームロジックの移植: RULES.md 3 章（グリッド・向き・乱数・生成・散らし・クリア判定・スナップ・固定とヒント）+ テスト + 照合データ | AI | テストが通り、照合データと一致する |
 | U2 | 描画: ピースを ISM で表示、散らばった初期配置、軌道カメラ（マテリアルは仮）、シードの外部指定（7.7）。7.2 の座標変換・`ACubelithGameMode`・`ACubelithPuzzleActor`・`ACubelithOrbitPawn` が入った | AI | 生成結果が見える |
-| U3 | 操作: 選択・グリッド移動・90 度回転・クリア検知（演出なし）、難易度の外部指定（7.7）。`ACubelithPlayerController`（ポーリング入力・ライントレースでのピックと選択・ドラッグ移動・2 本指のジェスチャ）と、`ACubelithPuzzleActor` の選択の強調 / 自由回転の見せ方（`SetFreeRotation`）・`ACubelithGameMode` のクリアの仮表示が入った。回転は「あり」の盤面（`?rot=1` / `-CubelithRotation=1`）でだけ効き、タッチは 2 本指のスワイプ / ひねり。マウスの右ボタンのドラッグは仮の手段で、**U4 で HUD の回転モードのトグルへ置き換えた**（4 章の「プレイ中 HUD」節。回転ギズモは作らない） | AI | 手でクリアできる |
-| U4 | 手触り: スナップと効果音、HUD、画面での難易度選択、固定・ヒント・次の問題、セーブ（10 章）。スナップと効果音・セーブの形と読み書き・タイトル / 難易度選択の画面と画面の切り替え・`ACubelithGameMode` のセッション（作る / 畳む / 作り直す）・固定 / 固定解除とヒントと散らし直し・プレイ中 HUD（残りピース数・回転モードのトグル・固定・散らし直す・ヒント・次の問題・難易度へ戻る）と回転モードのドラッグが入った（4 章の「スナップ」「固定の鍵アイコン」「セーブ」「画面（UI）」「プレイ中 HUD」節）。クリア画面とセーブの保存のタイミングは残り | AI と人 | 一通り遊べる |
+| U3 | 操作: 選択・グリッド移動・90 度回転・クリア検知（演出なし）、難易度の外部指定（7.7）。`ACubelithPlayerController`（ポーリング入力・ライントレースでのピックと選択・ドラッグ移動・2 本指のジェスチャ）と、`ACubelithPuzzleActor` の選択の強調 / 自由回転の見せ方（`SetFreeRotation`）・`ACubelithGameMode` のクリアの仮表示が入った。回転は「あり」の盤面（`?rot=1` / `-CubelithRotation=1`）でだけ効き、タッチは 2 本指のスワイプ / ひねり。マウスの右ボタンのドラッグは仮の手段で、**U4 で HUD の回転モードのトグルへ置き換えた**（4 章の「プレイ中 HUD」節。回転ギズモは作らない）。クリアの仮表示（画面のデバッグメッセージ）も**U4 でクリア画面へ置き換えて外した**（4 章の「クリア画面」節） | AI | 手でクリアできる |
+| U4 | 手触り: スナップと効果音、HUD、画面での難易度選択、固定・ヒント・次の問題、セーブ（10 章）。スナップと効果音・セーブの形と読み書き・タイトル / 難易度選択の画面と画面の切り替え・`ACubelithGameMode` のセッション（作る / 畳む / 作り直す）・固定 / 固定解除とヒントと散らし直し・プレイ中 HUD（残りピース数・回転モードのトグル・固定・散らし直す・ヒント・次の問題・難易度へ戻る）と回転モードのドラッグ・クリア画面（「もう一度」「難易度を変える」でコアゲームループが一巡する）が入った（4 章の「スナップ」「固定の鍵アイコン」「セーブ」「画面（UI）」「プレイ中 HUD」「クリア画面」節）。セーブの保存のタイミング（と「続きから」・クリア回数）は残り | AI と人 | 一通り遊べる |
 | U5 | 演出と質感: クリア時の発光・融合・パーティクル・カメラ旋回、すりガラス | 人と AI | 見せられる |
 | U6 | 最適化とモバイル: 実機で目標の fps、タッチ操作の調整 | 人と AI | 実機で遊べる |
 
