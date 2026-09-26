@@ -127,6 +127,62 @@ namespace CubelithCoreTests
 		return true;
 	}
 
+	bool ReadInt32ArrayOfArrays(const TSharedPtr<FJsonObject>& Object, const FString& FieldName, int32 ExpectedInnerNum, TArray<TArray<int32>>& OutValues, FString& OutError)
+	{
+		OutValues.Reset();
+
+		if (!Object.IsValid())
+		{
+			OutError = FString::Printf(TEXT("%s を読もうとしたが JSON が無効"), *FieldName);
+			return false;
+		}
+
+		const TArray<TSharedPtr<FJsonValue>>* Rows = nullptr;
+		if (!Object->TryGetArrayField(FieldName, Rows) || Rows == nullptr)
+		{
+			OutError = FString::Printf(TEXT("%s が配列として読めない"), *FieldName);
+			return false;
+		}
+
+		OutValues.Reserve(Rows->Num());
+		for (int32 RowIndex = 0; RowIndex < Rows->Num(); ++RowIndex)
+		{
+			const TArray<TSharedPtr<FJsonValue>>* Row = nullptr;
+			if (!(*Rows)[RowIndex].IsValid() || !(*Rows)[RowIndex]->TryGetArray(Row) || Row == nullptr)
+			{
+				OutError = FString::Printf(TEXT("%s の %d 番目が配列でない"), *FieldName, RowIndex);
+				return false;
+			}
+			if (Row->Num() != ExpectedInnerNum)
+			{
+				OutError = FString::Printf(TEXT("%s の %d 番目の要素数が %d でない: %d"), *FieldName, RowIndex, ExpectedInnerNum, Row->Num());
+				return false;
+			}
+
+			TArray<int32>& OutRow = OutValues.AddDefaulted_GetRef();
+			OutRow.Reserve(Row->Num());
+			for (int32 Index = 0; Index < Row->Num(); ++Index)
+			{
+				double Number = 0.0;
+				if (!(*Row)[Index].IsValid() || !(*Row)[Index]->TryGetNumber(Number))
+				{
+					OutError = FString::Printf(TEXT("%s の %d 番目の %d 要素目が数値でない"), *FieldName, RowIndex, Index);
+					return false;
+				}
+				// 照合データの数値は整数だけ（Docs/FIXTURES.md）。double からの取りこぼしを避けて丸めてから整数にする
+				const int64 Value = FMath::RoundToInt64(Number);
+				if (Value < static_cast<int64>(MIN_int32) || Value > static_cast<int64>(MAX_int32))
+				{
+					OutError = FString::Printf(TEXT("%s の %d 番目の %d 要素目が int32 に入らない: %lld"), *FieldName, RowIndex, Index, Value);
+					return false;
+				}
+				OutRow.Add(static_cast<int32>(Value));
+			}
+		}
+
+		return true;
+	}
+
 	bool ReadInt32Array(const TSharedPtr<FJsonObject>& Object, const FString& FieldName, TArray<int32>& OutValues, FString& OutError)
 	{
 		OutValues.Reset();
