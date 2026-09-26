@@ -129,13 +129,14 @@ void ACubelithOrbitPawn::PollInput()
 	if (bTouch1Down && bTouch2Down)
 	{
 		// 2 本指: 2 点間の距離の比で距離を変える（camera.ts の 2 本指ピンチ）。指を広げると寄る。
-		// ズームなので bOrbitEnabled は見ない
+		// ズームなので bOrbitEnabled は見ない。ただし選択中の 2 本指をコントローラが乗っ取っている間は
+		// bTouchPinchEnabled が false になり、同じピンチがあちらのジェスチャからも掛かる二重掛けを避ける
 		const double PinchDistance = FVector2D::Distance(FVector2D(Touch1X, Touch1Y), FVector2D(Touch2X, Touch2Y));
-		if (bWasTouch1Down && bWasTouch2Down && PreviousPinchDistance > 0.0 && PinchDistance > 0.0)
+		if (bTouchPinchEnabled && bWasTouch1Down && bWasTouch2Down && PreviousPinchDistance > 0.0 && PinchDistance > 0.0)
 		{
-			// 解釈: camera.ts は間隔の比をそのまま掛ける。感度はその比の指数として掛ける（1 で camera.ts と同じ）
-			MultiplyTargetDistance(FMath::Pow(PreviousPinchDistance / PinchDistance, FMath::Max(0.0, PinchZoomSensitivity)));
+			PinchZoomBy(PreviousPinchDistance / PinchDistance);
 		}
+		// 止めている間も指の間隔は追い続ける（有効に戻った瞬間に距離が飛ばないように。旋回と同じ考え方）
 		PreviousPinchDistance = PinchDistance;
 	}
 	else if (bTouch1Down)
@@ -181,6 +182,17 @@ void ACubelithOrbitPawn::PollInput()
 		// 手前に転がすと正なので符号が逆になる。手前に転がして寄るのが camera.ts と同じ手触り
 		MultiplyTargetDistance(FMath::Pow(WheelZoomScalePerNotch, -WheelNotches));
 	}
+}
+
+void ACubelithOrbitPawn::PinchZoomBy(double Scale)
+{
+	if (!FMath::IsFinite(Scale) || Scale <= 0.0)
+	{
+		return;
+	}
+
+	// 解釈: camera.ts は間隔の比をそのまま掛ける。感度はその比の指数として掛ける（1 で camera.ts と同じ）
+	MultiplyTargetDistance(FMath::Pow(Scale, FMath::Max(0.0, PinchZoomSensitivity)));
 }
 
 void ACubelithOrbitPawn::AddOrbitDelta(double ScreenDeltaX, double ScreenDeltaY)

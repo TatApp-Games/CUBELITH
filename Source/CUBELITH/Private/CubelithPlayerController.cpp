@@ -1,5 +1,6 @@
-// ピース選択とドラッグ移動の実装。移植元は WebMock/src/input/pieceInput.ts
-// （pickPiece / setSelected / MoveDrag / currentAxes / pixelsPerVoxelAt / orbit.enabled の扱い）
+// ピース選択・ドラッグ移動・90 度回転の実装。移植元は WebMock/src/input/pieceInput.ts
+// （pickPiece / setSelected / MoveDrag / currentAxes / pixelsPerVoxelAt / orbit.enabled の扱い、
+//   applyTwoFinger / RotateDrag / updateRotateDrag / commitRotateDrag）
 
 #include "CubelithPlayerController.h"
 
@@ -12,6 +13,7 @@
 #include "WorldCollision.h"
 
 #include "CubelithCoords.h"
+#include "CubelithFreeRotation.h"
 #include "CubelithGameMode.h"
 #include "CubelithLog.h"
 #include "CubelithOrbitPawn.h"
@@ -27,6 +29,28 @@ namespace
 	FVector WorldToLogicDirection(const FVector& WorldDirection)
 	{
 		return FVector(WorldDirection.X, WorldDirection.Z, WorldDirection.Y);
+	}
+
+	/** ログに出すグリッド軸の名前（ロジック座標の x / y / z） */
+	const TCHAR* LogicAxisName(Cubelith::EAxis Axis)
+	{
+		switch (Axis)
+		{
+		case Cubelith::EAxis::X: return TEXT("x");
+		case Cubelith::EAxis::Y: return TEXT("y");
+		default: return TEXT("z");
+		}
+	}
+
+	/** ログに出す 2 本指ジェスチャの名前 */
+	const TCHAR* TwoFingerGestureName(Cubelith::ETwoFingerRotateGesture Gesture)
+	{
+		switch (Gesture)
+		{
+		case Cubelith::ETwoFingerRotateGesture::Yaw: return TEXT("左右のスワイプ");
+		case Cubelith::ETwoFingerRotateGesture::Pitch: return TEXT("上下のスワイプ");
+		default: return TEXT("ひねり");
+		}
 	}
 }
 
@@ -74,15 +98,59 @@ void ACubelithPlayerController::PollPointer()
 
 	if (bTouch2Down && DragMode == ECubelithDragMode::MovePiece)
 	{
-		// 指が 2 本になったらドラッグ移動は打ち切る（2 本指の割り当ては 005。pieceInput.ts の onPointerDown が
+		// 指が 2 本になったらドラッグ移動は打ち切る（pieceInput.ts の onPointerDown が
 		// 2 本目で drag = null にするのと同じ）。旋回の有効・無効はここでは触らない
 		// ＝ このドラッグの役割は「ピース操作」のままで、離すまで変えない
 		DragMode = ECubelithDragMode::None;
 		DragPieceId = INDEX_NONE;
 	}
 
-	// タッチ 1 本目。押した瞬間 / 押しながら動かした / 離した、をポーリングの差分から作る
 	const FVector2D Touch1Position(Touch1X, Touch1Y);
+	const FVector2D Touch2Position(Touch2X, Touch2Y);
+
+	// 選択中のピースがある回転ありの盤面では、2 本指をこちらが乗っ取って
+	// 「90 度回転」と「ピンチのズーム」に振り分ける（pieceInput.ts の onPointerDown の 2 本目の分岐）。
+	// 回転「なし」と未選択のときは乗っ取らない ＝ 2 本指はそのまま Pawn のピンチズームになる（RULES.md 3.1）
+	const bool bConsumeTwoFinger =
+		bTouch1Down && bTouch2Down && SelectedPieceId != INDEX_NONE && IsRotationAllowed();
+	if (bConsumeTwoFinger)
+	{
+		if (!bTwoFingerActive)
+		{
+			// 走っているドラッグは畳む（右ボタンの自由回転はその場で確定させる。commitRotateDrag と同じ）。
+			// 何も無い場所から始めたカメラの旋回も、ここで「選択中は止める」状態へ戻る
+			EndDrag();
+
+			bTwoFingerActive = true;
+			Gesture.Reset(Touch1Position, Touch2Position);
+
+			// 同じピンチが Pawn 側とジェスチャ側で二重に効かないよう、Pawn のタッチのピンチを止める。
+			// 解釈: 003 でズームは選択の有無によらず効くようにしたので、どちらか一方に寄せる必要がある。
+			// 寄せ先はコントローラ（= ジェスチャの判定）にした。twoFingerGesture.ts の状態機械が
+			// 「ピンチか回転か」を最初に超えた閾値で決め打つので、判定をそこ 1 か所に集めた方が
+			// 「回そうとしたのに少し寄る」が起きない
+			if (ACubelithOrbitPawn* OrbitPawn = GetOrbitPawn())
+			{
+				OrbitPawn->bTouchPinchEnabled = false;
+			}
+		}
+		else
+		{
+			ApplyTwoFinger(Touch1Position, Touch2Position);
+		}
+	}
+	else if (bTwoFingerActive)
+	{
+		// 指が 1 本ずつ離れる（片方だけ離れた）ときもここに来る。残った指でドラッグ移動が始まることは無い
+		// （押した瞬間の立ち上がりが来ないので DragMode は None のまま。pieceInput.ts で drag が null のままなのと同じ）
+		bTwoFingerActive = false;
+		if (ACubelithOrbitPawn* OrbitPawn = GetOrbitPawn())
+		{
+			OrbitPawn->bTouchPinchEnabled = true;
+		}
+	}
+
+	// タッチ 1 本目。押した瞬間 / 押しながら動かした / 離した、をポーリングの差分から作る
 	if (bTouch1Down && !bWasTouchDown)
 	{
 		// 既に 2 本目が触れているところへ 1 本目が来ることは無い（Touch1 が先に埋まる）が、念のため弾く
@@ -102,6 +170,10 @@ void ACubelithPlayerController::PollPointer()
 	bWasTouchDown = bTouch1Down;
 
 	const bool bMouseDown = IsInputKeyDown(EKeys::LeftMouseButton);
+	// 右ボタンは「選択中のピースを回す」仮の手段（HUD の回転モードのトグルと回転ギズモは U4）。
+	// カメラの旋回は左ボタンだけを見ている（ACubelithOrbitPawn::PollInput）ので、右ボタンでカメラは回らない
+	const bool bRightMouseDown = IsInputKeyDown(EKeys::RightMouseButton);
+
 	// タッチが左クリックとしても流れてくる環境（Use Mouse for Touch）で二重に拾わない
 	// （ACubelithOrbitPawn::PollInput が旋回で同じ手当てをしているのと同じ理由）
 	if (!bTouch1Down && !bTouch2Down)
@@ -130,8 +202,32 @@ void ACubelithPlayerController::PollPointer()
 		{
 			HandlePointerReleased();
 		}
+
+		if (bRightMouseDown && !bWasRightMouseDown)
+		{
+			if (bHasMousePosition)
+			{
+				HandleRotatePressed(MousePosition);
+			}
+		}
+		else if (bRightMouseDown && bWasRightMouseDown)
+		{
+			if (bHasMousePosition)
+			{
+				HandleRotateMoved(MousePosition);
+			}
+		}
 	}
+
+	// 右ボタンを離したら必ず確定させる。上の分岐の外に出しておくのは、タッチが割り込んだフレームでも
+	// 表示だけねじれたピースを残さないため（pieceInput.ts の commitRotateDrag と同じ役目）
+	if (!bRightMouseDown && bWasRightMouseDown)
+	{
+		CommitRotateDrag();
+	}
+
 	bWasMouseDown = bMouseDown;
+	bWasRightMouseDown = bRightMouseDown;
 }
 
 void ACubelithPlayerController::HandlePointerPressed(const FVector2D& ScreenPosition, bool bTouch)
@@ -243,6 +339,10 @@ void ACubelithPlayerController::EndDrag()
 		return;
 	}
 
+	// 自由回転の途中で終わるなら、そこまでの回転を最寄りの向きへ確定させてから畳む
+	// （表示と論理がずれたまま残さない。pieceInput.ts の commitRotateDrag）
+	CommitRotateDrag();
+
 	DragMode = ECubelithDragMode::None;
 	DragPieceId = INDEX_NONE;
 	DragAppliedRight = 0;
@@ -250,6 +350,200 @@ void ACubelithPlayerController::EndDrag()
 
 	// カメラの旋回だったなら「選択中は止める」状態へ戻す。選択はそのまま残る（RULES.md 3.3）
 	UpdateOrbitEnabled();
+}
+
+void ACubelithPlayerController::HandleRotatePressed(const FVector2D& ScreenPosition)
+{
+	if (DragMode != ECubelithDragMode::None)
+	{
+		// 左ボタンのドラッグが走っている。役割は先に押したポインタで決まるので、右ボタンでは何も始めない
+		return;
+	}
+
+	// 弾いた理由はそのままログに出す。仮の手段なので、人がエディタで「なぜ回らないのか」を追えるようにしておく
+	if (!IsRotationAllowed())
+	{
+		UE_LOG(LogCubelith, Log,
+			TEXT("パズルの回転が「なし」なので回せない（RULES.md 3.1。回転ありの盤面は ?rot=1 / -CubelithRotation=1 で開く）"));
+		return;
+	}
+
+	if (SelectedPieceId == INDEX_NONE)
+	{
+		UE_LOG(LogCubelith, Log, TEXT("右ボタンのドラッグは選択中のピースを回す操作。ピースを選んでいないので何もしない"));
+		return;
+	}
+
+	if (IsPieceLocked(SelectedPieceId))
+	{
+		UE_LOG(LogCubelith, Log, TEXT("ピース %d は固定中なので回せない（RULES.md 3.3「固定」）"), SelectedPieceId);
+		return;
+	}
+
+	const Cubelith::FGame* Game = GetGame();
+	if (Game == nullptr || Game->PlacementOf(SelectedPieceId) == nullptr)
+	{
+		UE_LOG(LogCubelith, Warning, TEXT("ピース %d の配置が取れないので回せない"), SelectedPieceId);
+		return;
+	}
+
+	DragMode = ECubelithDragMode::RotatePiece;
+	DragPieceId = SelectedPieceId;
+	DragStartScreenPosition = ScreenPosition;
+	// 開始時の姿勢は毎回恒等。ドラッグ量からその都度作り直すので、往復させても誤差が溜まらない
+	FreeRotationQuat = FQuat::Identity;
+
+	UE_LOG(LogCubelith, Log,
+		TEXT("ピース %d の自由回転を始めた（右ボタンのドラッグ。離すと最寄りの 90 度の向きへ確定する）"), DragPieceId);
+}
+
+void ACubelithPlayerController::HandleRotateMoved(const FVector2D& ScreenPosition)
+{
+	if (DragMode != ECubelithDragMode::RotatePiece)
+	{
+		return;
+	}
+
+	FVector WorldRight = FVector::ZeroVector;
+	FVector WorldUp = FVector::ZeroVector;
+	FVector WorldForward = FVector::ZeroVector;
+	if (!GetCameraBasis(WorldRight, WorldUp, WorldForward))
+	{
+		// カメラが取れないフレームは回さない（次のフレームで開始位置からの総量として取り直される）
+		return;
+	}
+
+	// 開始位置からの総移動量から作り直す（差分を積み上げない。pieceInput.ts の updateRotateDrag）
+	const FQuat Quat = Cubelith::TrackballRotation(
+		WorldRight,
+		WorldUp,
+		ScreenPosition.X - DragStartScreenPosition.X,
+		ScreenPosition.Y - DragStartScreenPosition.Y,
+		FMath::Max(0.0, RotateDegreesPerPixel));
+
+	FreeRotationQuat = Quat;
+
+	// 見せるだけ。論理上の配置は離すまで変えない（回転の中心はピースの局所原点。RULES.md 3.3）
+	if (ACubelithPuzzleActor* PuzzleActor = GetPuzzleActor())
+	{
+		PuzzleActor->SetFreeRotation(DragPieceId, Quat);
+	}
+}
+
+void ACubelithPlayerController::CommitRotateDrag()
+{
+	if (DragMode != ECubelithDragMode::RotatePiece)
+	{
+		return;
+	}
+
+	const int32 PieceId = DragPieceId;
+	const FQuat Quat = FreeRotationQuat;
+
+	// 先に状態を畳む。下の Place が OnChange を通して描画を書き直すので、そこから再入しても二重に確定しない
+	DragMode = ECubelithDragMode::None;
+	DragPieceId = INDEX_NONE;
+	FreeRotationQuat = FQuat::Identity;
+
+	// 自由回転の見せ方は先に解く。このあとの Place で 1 回だけ描き直されて、確定した向きがそのまま出る
+	if (ACubelithPuzzleActor* PuzzleActor = GetPuzzleActor())
+	{
+		PuzzleActor->ClearFreeRotation(PieceId);
+	}
+
+	Cubelith::FGame* Game = GetGame();
+	const Cubelith::FPlacement* Placement = (Game != nullptr) ? Game->PlacementOf(PieceId) : nullptr;
+	if (Game == nullptr || Placement == nullptr)
+	{
+		UE_LOG(LogCubelith, Warning, TEXT("ピース %d の配置が取れないので自由回転を確定できなかった"), PieceId);
+		return;
+	}
+
+	// Place は配置の配列を作り直すので、Placement のポインタが指す先は無効になる。先に写しておく
+	const int32 PreviousOrientation = Placement->Orientation;
+	const Cubelith::FVec3 Position = Placement->Position;
+
+	// 見せていた姿勢に最も近い 90 度の向きへ（RULES.md 3.3）。位置は据え置き ＝ 局所原点まわりの回転
+	const int32 NextOrientation = Cubelith::SnappedOrientation(PreviousOrientation, Quat);
+	if (NextOrientation == PreviousOrientation)
+	{
+		UE_LOG(LogCubelith, Log,
+			TEXT("ピース %d の自由回転は向き %d のままに落ちた（90 度に届かなかった）"), PieceId, PreviousOrientation);
+		return;
+	}
+
+	Game->Place(PieceId, NextOrientation, Position);
+	UE_LOG(LogCubelith, Log, TEXT("ピース %d を回した: 向き %d → %d（右ボタンのドラッグを離して確定）"),
+		PieceId, PreviousOrientation, NextOrientation);
+}
+
+void ACubelithPlayerController::ApplyTwoFinger(const FVector2D& First, const FVector2D& Second)
+{
+	const Cubelith::FTwoFingerAction Action = Gesture.Update(First, Second);
+	if (Action.Kind == Cubelith::ETwoFingerActionKind::None)
+	{
+		return;
+	}
+
+	if (Action.Kind == Cubelith::ETwoFingerActionKind::Zoom)
+	{
+		// ズームは固定中のピースを選んでいても効かせる（RULES.md 3.3。選択の有無によらないのが本来）。
+		// Pawn 側のタッチのピンチはこの間止めてあるので二重に効かない
+		if (ACubelithOrbitPawn* OrbitPawn = GetOrbitPawn())
+		{
+			OrbitPawn->PinchZoomBy(Action.Scale);
+		}
+		return;
+	}
+
+	// ここから 90 度回転。乗っ取る条件で「回転あり」と「選択あり」は確かめてあるので、残るのは固定と配置
+	const int32 PieceId = SelectedPieceId;
+	if (PieceId == INDEX_NONE)
+	{
+		return;
+	}
+
+	if (IsPieceLocked(PieceId))
+	{
+		UE_LOG(LogCubelith, Log,
+			TEXT("ピース %d は固定中なので 2 本指の回転を弾いた（ズームは効く。RULES.md 3.3「固定」）"), PieceId);
+		return;
+	}
+
+	Cubelith::FGame* Game = GetGame();
+	if (Game == nullptr)
+	{
+		return;
+	}
+
+	Cubelith::FDragAxes Axes;
+	if (!ComputeDragAxes(Axes))
+	{
+		UE_LOG(LogCubelith, Warning, TEXT("カメラが取れないのでピース %d を 2 本指で回せない"), PieceId);
+		return;
+	}
+
+	// 画面基準の軸（Yaw = 画面の上、Pitch = 画面の右、Roll = 画面の奥）をグリッド軸へ写し、
+	// 「見たまま回る」向きを決める（pieceInput.ts の screenSign）
+	const Cubelith::FRotateStep Step = Cubelith::TwoFingerRotateStep(Action, Axes);
+	if (Step.Dir == 0)
+	{
+		return;
+	}
+
+	// 局所原点まわりの 90 度（RULES.md 3.3）。1 回のジェスチャで 1 回だけ回る
+	// （FTwoFingerGesture が回転を返した時点で Done になり、指を離すまで次を返さない）
+	Game->Rotate(PieceId, Step.Axis, Step.Dir);
+
+	UE_LOG(LogCubelith, Log, TEXT("2 本指（%s）でピース %d を %s 軸まわりに %s 90 度回した"),
+		TwoFingerGestureName(Action.Gesture), PieceId, LogicAxisName(Step.Axis),
+		(Step.Dir > 0) ? TEXT("+") : TEXT("-"));
+}
+
+bool ACubelithPlayerController::IsRotationAllowed() const
+{
+	const ACubelithGameMode* GameMode = GetCubelithGameMode();
+	return (GameMode != nullptr) && GameMode->IsRotationAllowed();
 }
 
 bool ACubelithPlayerController::GetCameraBasis(FVector& OutRight, FVector& OutUp, FVector& OutForward) const
@@ -380,6 +674,10 @@ void ACubelithPlayerController::SetSelectedPiece(int32 PieceId)
 	{
 		return;
 	}
+
+	// 選択が変わる前に、走っている自由回転を確定させる（回転は選んだピースに紐づく操作。
+	// pieceInput.ts の setSelected が commitRotateDrag を通してから選択を差し替えるのと同じ）
+	CommitRotateDrag();
 
 	SelectedPieceId = PieceId;
 

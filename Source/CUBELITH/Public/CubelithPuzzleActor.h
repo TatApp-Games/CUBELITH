@@ -2,6 +2,7 @@
 // 移植元は WebMock/src/render/pieces.ts。1 ピース 1 InstancedMesh・ボクセルをわずかに縮める・
 // ピースごとに色相をずらす・解答空間の中心を原点に合わせる、という組み立てをそのまま写してある
 // マテリアルは仮（U2 の段階。すりガラスと発光コアは U5 で人が作る）
+// U3 で選択の強調（SetSelectedPiece）と、回転中の 90 度に縛らない見せ方（SetFreeRotation）を足した
 
 #pragma once
 
@@ -77,6 +78,22 @@ public:
 	/** 選択中のピース id（未選択は INDEX_NONE） */
 	int32 GetSelectedPiece() const { return SelectedPieceId; }
 
+	/**
+	 * 表示だけの自由回転を掛ける（90 度に縛らない見せ方。pieces.ts の setFreeRotation）。
+	 * ロジックの配置は変えないので、確定させるのは呼び出し側（ACubelithPlayerController が
+	 * Cubelith::SnappedOrientation と Cubelith::FGame::Place で行い、そのあと ClearFreeRotation で解く）。
+	 *
+	 * WorldQuat は UE ワールド（Z が上・左手系。Docs/SPEC_UE.md 7.2 の変換を通した空間）の回転で、
+	 * 回転の中心はそのピースの**局所原点**（RULES.md 3.3。Cubelith::FPlacement::Position がそのグリッド座標）。
+	 * 90 度で確定したときに FGame::Rotate / FGame::Place と同じ中心で回るので、表示と論理がずれない。
+	 *
+	 * まだ一度も配置を受けていないピース（UpdatePlacements 前）に掛けても、次の UpdatePlacements で効く。
+	 */
+	void SetFreeRotation(int32 PieceId, const FQuat& WorldQuat);
+
+	/** 自由回転を解いて、ロジックの配置どおりの見た目に戻す（掛かっていなければ何もしない） */
+	void ClearFreeRotation(int32 PieceId);
+
 	/** ボクセル 1 個のメッシュ。既定はエンジンの立方体 /Engine/BasicShapes/Cube（1 辺 100 cm） */
 	UPROPERTY(EditAnywhere, Category = "Cubelith|Render")
 	TObjectPtr<UStaticMesh> VoxelMesh;
@@ -127,6 +144,19 @@ public:
 	float SelectionBrightnessScale = 1.6f;
 
 private:
+	/**
+	 * 1 ピース分のインスタンスを書き直す（pieces.ts の applyPlacement）。表示だけの自由回転はここで足す。
+	 * 戻り値はアクタの原点から最も遠いボクセルまでの距離の 2 乗（外接球の半径を測るのに使う。自由回転は数えない）。
+	 * 未知のピース id なら警告を出して 0 を返す。
+	 */
+	double ApplyPlacement(const Cubelith::FPlacement& Placement, const FVector& CenterOffset, const FVector& InstanceScale);
+
+	/** 直近の配置でそのピースだけ書き直す（自由回転を掛け外ししたとき）。まだ置いていなければ何もしない */
+	void RedrawPiece(int32 PieceId);
+
+	/** インスタンス 1 個のスケール（メッシュの 1 辺をボクセル 1 マスにしてから VoxelFillRatio だけ縮める） */
+	FVector GetInstanceScale() const;
+
 	/** ピース index からピース色を作る（pieces.ts の pieceColor） */
 	FLinearColor MakePieceColor(int32 Index, int32 Count) const;
 
@@ -159,6 +189,15 @@ private:
 
 	/** ピース id → 選択していないときの色。強調を解くときにここへ戻す */
 	TMap<int32, FLinearColor> PieceBaseColors;
+
+	/**
+	 * ピース id → 直近の UpdatePlacements で受けた配置（pieces.ts の lastPlacements）。
+	 * 自由回転を掛け外しするときに、そのピースだけを同じ配置で書き直すのに使う
+	 */
+	TMap<int32, Cubelith::FPlacement> LastPlacements;
+
+	/** ピース id → 表示だけの自由回転（掛かっているピースだけ入る。pieces.ts の freeRotations） */
+	TMap<int32, FQuat> FreeRotations;
 
 	/** 選択中のピース id（未選択は INDEX_NONE）。Build で作り直したら未選択に戻る */
 	int32 SelectedPieceId = INDEX_NONE;

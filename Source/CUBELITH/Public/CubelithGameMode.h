@@ -46,6 +46,13 @@ public:
 	ACubelithPuzzleActor* GetPuzzleActor() const { return PuzzleActor; }
 
 	/**
+	 * この盤面がパズルの回転「あり」か（RULES.md 3.1）。下の bAllowRotation に `?rot=` / `-CubelithRotation=`
+	 * を反映して StartPuzzle が決めた値で、ACubelithPlayerController が回転操作の可否に使う。
+	 * パズルを開く前は「なし」（そもそも操作する盤面が無い）
+	 */
+	bool IsRotationAllowed() const { return bResolvedAllowRotation; }
+
+	/**
 	 * 空間サイズ N（RULES.md 3.1。既定 3）。
 	 * `?n=` / `-CubelithN=` のほうが優先される。範囲外は 3..7 に丸める（Docs/SPEC_UE.md 7.7）
 	 */
@@ -122,6 +129,12 @@ private:
 
 	/** クリアの仮表示を出しているか（= 直近に受け取ったクリア判定の結果） */
 	bool bSolvedShown = false;
+
+	/**
+	 * StartPuzzle が実際に使ったパズルの回転（IsRotationAllowed が返す値）。
+	 * UPROPERTY の bAllowRotation は「指定が無ければこれを使う」既定値で、こちらが決まった結果
+	 */
+	bool bResolvedAllowRotation = false;
 
 	/** ピースを描くアクタ。BeginPlay でワールド原点に湧かせる */
 	UPROPERTY()

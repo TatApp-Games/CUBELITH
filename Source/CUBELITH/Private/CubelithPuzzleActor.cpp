@@ -91,6 +91,9 @@ void ACubelithPuzzleActor::Build(TArrayView<const Cubelith::FPiece> Pieces, int3
 	PieceList.Reset();
 	PieceMaterials.Reset();
 	PieceBaseColors.Reset();
+	LastPlacements.Reset();
+	// 作り直したら表示だけの自由回転も消える（掛けていた操作は外で畳まれている）
+	FreeRotations.Reset();
 	// 作り直したら選択は無くなる（選び直すのは操作する側。RULES.md 3.3 の外からの解除に当たる）
 	SelectedPieceId = INDEX_NONE;
 	BoundingRadiusCm = 0.0;
@@ -190,54 +193,14 @@ void ACubelithPuzzleActor::UpdatePlacements(TArrayView<const Cubelith::FPlacemen
 	}
 
 	const FVector CenterOffset = SolutionSpaceCenterOffset(SpaceSize);
-	// メッシュの 1 辺をボクセル 1 マス分にしてから、境目が見えるよう VoxelFillRatio だけ縮める
-	const double Scale = static_cast<double>(VoxelFillRatio) * Cubelith::VoxelSizeCm / GetVoxelMeshSizeCm();
-	const FVector InstanceScale(Scale, Scale, Scale);
+	const FVector InstanceScale = GetInstanceScale();
 
 	double MaxDistanceSquared = 0.0;
 
 	for (const Cubelith::FPlacement& Placement : Placements)
 	{
-		const Cubelith::FPiece* Piece = FindPiece(Placement.PieceId);
-		TObjectPtr<UInstancedStaticMeshComponent>* Found = PieceMeshes.Find(Placement.PieceId);
-		UInstancedStaticMeshComponent* Mesh = (Found != nullptr) ? Found->Get() : nullptr;
-		if (Piece == nullptr || Mesh == nullptr)
-		{
-			UE_LOG(LogCubelith, Warning, TEXT("未知のピース id %d の配置が来た"), Placement.PieceId);
-			continue;
-		}
-
-		// 向きは PlacedVoxels がワールドのボクセル座標に織り込むので、インスタンスは平行移動だけでよい
-		// （pieces.ts の通常時と同じ）。Cubelith::OrientationToWorldQuat は U3 の自由回転（指で回している
-		// 間の、90 度に縛られない見た目）で使うためのもので、ここでは要らない
-		const TArray<Cubelith::FVec3> Voxels = Cubelith::PlacedVoxels(*Piece, Placement);
-
-		for (int32 Index = 0; Index < Voxels.Num(); ++Index)
-		{
-			// アクタはワールド原点に置くので、このローカル座標がそのままワールド座標になる
-			const FVector Location = Cubelith::VoxelToWorld(Voxels[Index]) + CenterOffset;
-			MaxDistanceSquared = FMath::Max(MaxDistanceSquared, Location.SizeSquared());
-
-			const FTransform InstanceTransform(FQuat::Identity, Location, InstanceScale);
-			if (Index < Mesh->GetInstanceCount())
-			{
-				// 描画への反映（MarkRenderStateDirty）は 1 ピース分を書き終えてから 1 回だけ行う
-				Mesh->UpdateInstanceTransform(Index, InstanceTransform, /*bWorldSpace=*/false,
-					/*bMarkRenderStateDirty=*/false, /*bTeleport=*/true);
-			}
-			else
-			{
-				Mesh->AddInstance(InstanceTransform, /*bWorldSpace=*/false);
-			}
-		}
-
-		// ピースのボクセル数は変わらないので普通は起きないが、余っていれば後ろから捨てる
-		for (int32 Index = Mesh->GetInstanceCount() - 1; Index >= Voxels.Num(); --Index)
-		{
-			Mesh->RemoveInstance(Index);
-		}
-
-		Mesh->MarkRenderStateDirty();
+		MaxDistanceSquared =
+			FMath::Max(MaxDistanceSquared, ApplyPlacement(Placement, CenterOffset, InstanceScale));
 	}
 
 	if (MaxDistanceSquared > 0.0)
@@ -245,6 +208,121 @@ void ACubelithPuzzleActor::UpdatePlacements(TArrayView<const Cubelith::FPlacemen
 		// 求めたのはボクセルの中心までの距離なので、端まで入るようボクセル 1 個分を足す
 		BoundingRadiusCm = FMath::Sqrt(MaxDistanceSquared) + Cubelith::VoxelSizeCm;
 	}
+}
+
+double ACubelithPuzzleActor::ApplyPlacement(
+	const Cubelith::FPlacement& Placement, const FVector& CenterOffset, const FVector& InstanceScale)
+{
+	const Cubelith::FPiece* Piece = FindPiece(Placement.PieceId);
+	TObjectPtr<UInstancedStaticMeshComponent>* Found = PieceMeshes.Find(Placement.PieceId);
+	UInstancedStaticMeshComponent* Mesh = (Found != nullptr) ? Found->Get() : nullptr;
+	if (Piece == nullptr || Mesh == nullptr)
+	{
+		UE_LOG(LogCubelith, Warning, TEXT("未知のピース id %d の配置が来た"), Placement.PieceId);
+		return 0.0;
+	}
+
+	// 自由回転を掛け外ししたときに同じ配置で書き直せるよう控えておく（pieces.ts の lastPlacements）
+	LastPlacements.Add(Placement.PieceId, Placement);
+
+	// 表示だけの自由回転（掛かっていなければ nullptr）。90 度に縛らない見せ方で、ロジックの配置は変わらない
+	const FQuat* FreeRotation = FreeRotations.Find(Placement.PieceId);
+
+	// 向きは PlacedVoxels がワールドのボクセル座標に織り込むので、通常時のインスタンスは平行移動だけでよい
+	// （pieces.ts の通常時と同じ）
+	const TArray<Cubelith::FVec3> Voxels = Cubelith::PlacedVoxels(*Piece, Placement);
+
+	// 自由回転の中心はピースの局所原点（RULES.md 3.3。Placement.Position がそのグリッド座標）。
+	// FGame::Rotate / FGame::Place は Position を据え置いて向き id だけを差し替える = 局所原点まわりの回転なので、
+	// 見せ方も同じ中心で回さないと確定した瞬間にピースが飛ぶ
+	const FVector FreeRotationCenter = Cubelith::VoxelToWorld(Placement.Position) + CenterOffset;
+
+	double MaxDistanceSquared = 0.0;
+
+	for (int32 Index = 0; Index < Voxels.Num(); ++Index)
+	{
+		// アクタはワールド原点に置くので、このローカル座標がそのままワールド座標になる
+		FVector Location = Cubelith::VoxelToWorld(Voxels[Index]) + CenterOffset;
+		// 外接球は「ロジックの配置での大きさ」を測るものなので、一時的な自由回転は数えない
+		MaxDistanceSquared = FMath::Max(MaxDistanceSquared, Location.SizeSquared());
+
+		FQuat InstanceRotation = FQuat::Identity;
+		if (FreeRotation != nullptr)
+		{
+			// 局所原点まわりに回した位置へ、ボクセル自身も同じだけ回して置く（pieces.ts の回転モード中と同じ）
+			Location = FreeRotationCenter + FreeRotation->RotateVector(Location - FreeRotationCenter);
+			InstanceRotation = *FreeRotation;
+		}
+
+		const FTransform InstanceTransform(InstanceRotation, Location, InstanceScale);
+		if (Index < Mesh->GetInstanceCount())
+		{
+			// 描画への反映（MarkRenderStateDirty）は 1 ピース分を書き終えてから 1 回だけ行う
+			Mesh->UpdateInstanceTransform(Index, InstanceTransform, /*bWorldSpace=*/false,
+				/*bMarkRenderStateDirty=*/false, /*bTeleport=*/true);
+		}
+		else
+		{
+			Mesh->AddInstance(InstanceTransform, /*bWorldSpace=*/false);
+		}
+	}
+
+	// ピースのボクセル数は変わらないので普通は起きないが、余っていれば後ろから捨てる
+	for (int32 Index = Mesh->GetInstanceCount() - 1; Index >= Voxels.Num(); --Index)
+	{
+		Mesh->RemoveInstance(Index);
+	}
+
+	Mesh->MarkRenderStateDirty();
+
+	return MaxDistanceSquared;
+}
+
+void ACubelithPuzzleActor::SetFreeRotation(int32 PieceId, const FQuat& WorldQuat)
+{
+	// 回転を掛けるのは行列の作り直しなので、同じ向きで呼ばれたら書き直さない（ドラッグ中は毎フレーム通る）
+	if (const FQuat* Existing = FreeRotations.Find(PieceId))
+	{
+		if (Existing->Equals(WorldQuat))
+		{
+			return;
+		}
+	}
+
+	FreeRotations.Add(PieceId, WorldQuat.GetNormalized());
+	RedrawPiece(PieceId);
+}
+
+void ACubelithPuzzleActor::ClearFreeRotation(int32 PieceId)
+{
+	// 掛かっていなければ書き直す必要も無い（通常時の負荷を増やさない。pieces.ts の setFreeRotation(null) と同じ）
+	if (FreeRotations.Remove(PieceId) == 0)
+	{
+		return;
+	}
+
+	RedrawPiece(PieceId);
+}
+
+void ACubelithPuzzleActor::RedrawPiece(int32 PieceId)
+{
+	const Cubelith::FPlacement* Found = LastPlacements.Find(PieceId);
+	if (Found == nullptr)
+	{
+		// まだ一度も配置を受けていない。次の UpdatePlacements で自由回転ごと反映される
+		return;
+	}
+
+	// ApplyPlacement が LastPlacements を書き換えるので、参照ではなく写しを渡す
+	const Cubelith::FPlacement Placement = *Found;
+	ApplyPlacement(Placement, SolutionSpaceCenterOffset(SpaceSize), GetInstanceScale());
+}
+
+FVector ACubelithPuzzleActor::GetInstanceScale() const
+{
+	// メッシュの 1 辺をボクセル 1 マス分にしてから、境目が見えるよう VoxelFillRatio だけ縮める
+	const double Scale = static_cast<double>(VoxelFillRatio) * Cubelith::VoxelSizeCm / GetVoxelMeshSizeCm();
+	return FVector(Scale, Scale, Scale);
 }
 
 FLinearColor ACubelithPuzzleActor::MakePieceColor(int32 Index, int32 Count) const
