@@ -35,7 +35,7 @@
 | 選択・スナップ候補の発光（RULES.md 3.3 / 5.1） | マテリアルのパラメータ | 人と AI |
 | 固定の鍵アイコン（RULES.md 6 章） | 未定 | — |
 | 軌道カメラ（`src/render/camera.ts`） | 注視点まわりの軌道カメラを C++ で。U2 で `ACubelithOrbitPawn`（`USpringArmComponent` + `UCameraComponent`）として実装し、`ACubelithGameMode` が開始時にパズルへ合わせる | AI |
-| 入力（`src/input/`） | ライントレースでピースを選ぶ。純粋関数（`axisMapping` / `twoFingerGesture` など）はテストごと C++ へ移す。U2 のカメラ操作は、`InputMappingContext` / `InputAction` が `.uasset`（0 章）なので Enhanced Input を使わず、Tick で `APlayerController` から入力状態をポーリングして読む。人がアセットを作る段になれば Enhanced Input へ移せる | AI（感度の調整は人） |
+| 入力（`src/input/`） | ライントレースでピースを選ぶ。純粋関数（`axisMapping` / `twoFingerGesture` など）はテストごと C++ へ移す。U2 のカメラ操作は、`InputMappingContext` / `InputAction` が `.uasset`（0 章）なので Enhanced Input を使わず、Tick で `APlayerController` から入力状態をポーリングして読む。人がアセットを作る段になれば Enhanced Input へ移せる。U3 で `ACubelithPlayerController` として実装（`PlayerTick` でのポーリング入力・押した瞬間のライントレースでのピックと選択・ドラッグでのグリッド移動・2 本指の 90 度回転）。`src/input` の純粋関数は `CubelithPickSamples` / `CubelithAxisMapping` / `CubelithTwoFingerGesture` / `CubelithFreeRotation` / `CubelithRotateInput`（`Source/CUBELITH/Public`）へ移した。回転中の 90 度に縛らない見せ方は `ACubelithPuzzleActor::SetFreeRotation`。**マウスの回転は右ボタンのドラッグ**（離した時点で最寄りの向きへ確定させる）で、これは HUD の回転モードのトグルと回転ギズモ（U4）までの仮の手段 | AI（感度の調整は人） |
 | スナップの効果音（RULES.md 3.5） | MetaSounds | 人 |
 | クリア演出（RULES.md 5.2） | 発光は Material Parameter Collection、パーティクルは Niagara（原典 5.2）、カメラの旋回は C++ | 人と AI |
 | UI（RULES.md 6 章） | UMG。C++ の基底クラス（`BindWidget`）と、人が作るレイアウト。縦持ちの画面に合わせる | 人と AI |
@@ -185,7 +185,7 @@ RULES.md 3.1 の 3 項目を、シードと同じ 3 通りの方法で指定で�
 | U0 | 雛形: `.uproject` と C++ モジュール 2 つ（7.1）・テスト、`.gitignore` / `.gitattributes`（7.4）、エディタの MCP（7.6）、UE 用の CLAUDE.md（`Source/CLAUDE.md`。コマンド・開発ルール・タスクの切り方）。2026-09-26 に完了 | 人と AI | コマンドラインでビルドとテストが通る |
 | U1 | ゲームロジックの移植: RULES.md 3 章（グリッド・向き・乱数・生成・散らし・クリア判定・スナップ・固定とヒント）+ テスト + 照合データ | AI | テストが通り、照合データと一致する |
 | U2 | 描画: ピースを ISM で表示、散らばった初期配置、軌道カメラ（マテリアルは仮）、シードの外部指定（7.7）。7.2 の座標変換・`ACubelithGameMode`・`ACubelithPuzzleActor`・`ACubelithOrbitPawn` が入った | AI | 生成結果が見える |
-| U3 | 操作: 選択・グリッド移動・90 度回転・クリア検知（演出なし）、難易度の外部指定（7.7） | AI | 手でクリアできる |
+| U3 | 操作: 選択・グリッド移動・90 度回転・クリア検知（演出なし）、難易度の外部指定（7.7）。`ACubelithPlayerController`（ポーリング入力・ライントレースでのピックと選択・ドラッグ移動・2 本指のジェスチャ）と、`ACubelithPuzzleActor` の選択の強調 / 自由回転の見せ方（`SetFreeRotation`）・`ACubelithGameMode` のクリアの仮表示が入った。回転は「あり」の盤面（`?rot=1` / `-CubelithRotation=1`）でだけ効き、タッチは 2 本指のスワイプ / ひねり、マウスは右ボタンのドラッグ（仮の手段）。スナップ・HUD・回転モードのトグル・回転ギズモは U4 | AI | 手でクリアできる |
 | U4 | 手触り: スナップと効果音、HUD、画面での難易度選択、固定・ヒント・次の問題、セーブ（10 章） | AI と人 | 一通り遊べる |
 | U5 | 演出と質感: クリア時の発光・融合・パーティクル・カメラ旋回、すりガラス | 人と AI | 見せられる |
 | U6 | 最適化とモバイル: 実機で目標の fps、タッチ操作の調整 | 人と AI | 実機で遊べる |

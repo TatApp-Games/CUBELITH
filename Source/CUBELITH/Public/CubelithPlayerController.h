@@ -1,14 +1,20 @@
-// ピースの選択とドラッグ移動を受け持つ PlayerController（RULES.md 3.3・Docs/SPEC_UE.md 8 章 U3）
-// 移植元は WebMock/src/input/pieceInput.ts の pickPiece / setSelected / MoveDrag。
+// ピースの選択・ドラッグ移動・90 度回転を受け持つ PlayerController（RULES.md 3.3・Docs/SPEC_UE.md 8 章 U3）
+// 移植元は WebMock/src/input/pieceInput.ts の pickPiece / setSelected / MoveDrag / applyTwoFinger / RotateDrag。
 // 押した瞬間にライントレースでピースを引き、当たったピースを選択中にする。
 // 何も無い場所を押しても選択は外さない（RULES.md 3.3。外れるのは「散らし直す」など外からの解除だけで、それは U4）。
 //
 // ドラッグは押した瞬間に役割が決まり、離すまで変わらない:
-//   ピースを押した  → そのピースをカメラの向きに応じた 2 軸へボクセル単位で動かす（軌道カメラの旋回は止める）
-//   何も無い場所    → 選択は保ったままカメラを旋回させる（ACubelithOrbitPawn::bOrbitEnabled を戻す）
-// ホイール / ピンチのズームは選択の有無によらず効く（ACubelithOrbitPawn が受け持つ）。
+//   ピースを押した      → そのピースをカメラの向きに応じた 2 軸へボクセル単位で動かす（軌道カメラの旋回は止める）
+//   何も無い場所        → 選択は保ったままカメラを旋回させる（ACubelithOrbitPawn::bOrbitEnabled を戻す）
+//   右ボタン（マウス）  → 選択中のピースを 90 度に縛らず回して見せ、離した時点で最寄りの向きへ確定させる
+// ホイールのズームは選択の有無によらず効く（ACubelithOrbitPawn が受け持つ）。
 //
-// スナップは U4、90 度回転と 2 本指ジェスチャは 005（ここでは指が 2 本になったら移動を打ち切るだけ）。
+// 2 本指（タッチ）は、パズルの回転「あり」でピースを選んでいる間だけこのコントローラが乗っ取り、
+// Cubelith::FTwoFingerGesture に通して「90 度回転」か「ピンチのズーム」に振り分ける。
+// 乗っ取っている間は ACubelithOrbitPawn::bTouchPinchEnabled を false にして、同じピンチが二重に効かないようにする。
+// 回転「なし」の盤面と未選択のときは乗っ取らないので、2 本指はそのまま Pawn のピンチズームになる（RULES.md 3.1）。
+//
+// スナップは U4、HUD の回転モードのトグルと回転ギズモも U4（マウスの右ボタンはそこまでの仮の手段）。
 
 #pragma once
 
@@ -17,6 +23,8 @@
 
 #include "CubelithAxisMapping.h"
 #include "CubelithPickSamples.h"
+#include "CubelithRotateInput.h"
+#include "CubelithTwoFingerGesture.h"
 
 #include "CubelithPlayerController.generated.h"
 
@@ -43,6 +51,12 @@ enum class ECubelithDragMode : uint8
 
 	/** 何も無い場所から始めたドラッグ。カメラの旋回に回す（選択は保つ） */
 	OrbitCamera,
+
+	/**
+	 * 選択中のピースを自由回転させている（マウスの右ボタン。90 度に縛らず見せるだけで、
+	 * 離した時点で最寄りの向きへ確定させる。pieceInput.ts の RotateDrag に当たる）
+	 */
+	RotatePiece,
 };
 
 /**
@@ -112,6 +126,13 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Cubelith|Input", meta = (ClampMin = "1.0"))
 	double MaxPixelsPerVoxel = 160.0;
 
+	/**
+	 * 右ボタンのドラッグでピースを回す感度（ドラッグ 1 px あたりの回転角・度）。
+	 * 既定は pieceInput.ts の ROTATE_DEGREES_PER_PIXEL（90 度回すのに 225 px）
+	 */
+	UPROPERTY(EditAnywhere, Category = "Cubelith|Input", meta = (ClampMin = "0.0"))
+	double RotateDegreesPerPixel = Cubelith::RotateDegreesPerPixel;
+
 protected:
 	virtual void BeginPlay() override;
 
@@ -130,6 +151,39 @@ private:
 
 	/** 離したときの処理。スナップ（U4）はここに入る。今はドラッグの役割を畳むだけ */
 	void HandlePointerReleased();
+
+	/**
+	 * 右ボタンを押した瞬間の処理（マウスで回転を確かめる仮の手段）。
+	 * 選択中で固定していないピースがあり、パズルの回転が「あり」なら自由回転を始める。
+	 * 始められない理由はそのまま LogCubelith に出す（人がエディタで確かめるときの手がかり）
+	 */
+	void HandleRotatePressed(const FVector2D& ScreenPosition);
+
+	/**
+	 * 右ボタンを押したまま動かしたときの処理。開始位置からの移動量で作り直した回転を
+	 * ACubelithPuzzleActor::SetFreeRotation に流して見せるだけで、論理上の配置は変えない
+	 */
+	void HandleRotateMoved(const FVector2D& ScreenPosition);
+
+	/**
+	 * 走っている自由回転を最寄りの向きへ確定させる（pieceInput.ts の commitRotateDrag）。
+	 * Cubelith::SnappedOrientation で向き id を決めて Cubelith::FGame::Place で反映し、
+	 * 自由回転の見せ方を解く。指を離す以外の理由で終わるとき（選択が変わる・指が 2 本になる）も必ずここを通す
+	 * ＝ 表示だけねじれたピースが残らない
+	 */
+	void CommitRotateDrag();
+
+	/**
+	 * 2 本指ジェスチャを 1 回分処理する（pieceInput.ts の applyTwoFinger）。
+	 * 回転なら Cubelith::FGame::Rotate、ズームなら ACubelithOrbitPawn::PinchZoomBy に流す
+	 */
+	void ApplyTwoFinger(const FVector2D& First, const FVector2D& Second);
+
+	/**
+	 * この盤面でパズルの回転が「あり」か（RULES.md 3.1）。ACubelithGameMode が決めた値を読む。
+	 * 「なし」なら 2 本指の 90 度回転も右ボタンの自由回転も行わない（ピンチのズームだけが残る）
+	 */
+	bool IsRotationAllowed() const;
 
 	/**
 	 * ドラッグ移動を始める。開始画面座標・ドラッグ軸・感度をこの時点で固定するので、
@@ -199,6 +253,18 @@ private:
 	/** 前フレームの押下状態（ポーリングなので立ち上がりを自分で見る） */
 	bool bWasTouchDown = false;
 	bool bWasMouseDown = false;
+	bool bWasRightMouseDown = false;
+
+	/** 2 本指ジェスチャの状態機械（ピンチか 90 度回転かを判定する。移植元 twoFingerGesture.ts） */
+	Cubelith::FTwoFingerGesture Gesture;
+
+	/**
+	 * 選択中の 2 本指をこのコントローラが乗っ取っているか（pieceInput.ts の gestureActive）。
+	 * 追う 2 本は ETouchIndex::Touch1 / Touch2 の組で、UE のタッチ index は指ごとにその指の寿命の間
+	 * 変わらないので、この 2 つがそのまま「先に触れた 2 本を触れた順で固定したもの」になる
+	 * （ひねりの向きは組の順で反転するので、順序の安定が要る）。どちらかが離れたらジェスチャを終える
+	 */
+	bool bTwoFingerActive = false;
 
 	/** 選択中のピース id（未選択は INDEX_NONE） */
 	int32 SelectedPieceId = INDEX_NONE;
@@ -221,4 +287,11 @@ private:
 	/** これまでに Cubelith::FGame::Move へ流したマス数。差分だけを流すために持つ */
 	int32 DragAppliedRight = 0;
 	int32 DragAppliedUp = 0;
+
+	/**
+	 * 自由回転で今見せている回転（UE ワールド。DragMode == RotatePiece の間だけ意味を持つ）。
+	 * 開始時の姿勢（pieceInput.ts の base）は毎回恒等で、毎フレーム「開始位置からの総移動量」から
+	 * 作り直す（差分を積み上げて誤差を溜めない）
+	 */
+	FQuat FreeRotationQuat = FQuat::Identity;
 };

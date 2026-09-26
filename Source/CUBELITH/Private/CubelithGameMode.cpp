@@ -166,6 +166,8 @@ void ACubelithGameMode::StartPuzzle()
 	const Cubelith::FDifficultyResolution Difficulty = ResolveDifficulty();
 	const int32 N = Difficulty.SpaceSize;
 	const int32 M = Difficulty.PieceCount;
+	// 回転操作の可否をコントローラから読めるようにする（ACubelithPlayerController::IsRotationAllowed）
+	bResolvedAllowRotation = Difficulty.bAllowRotation;
 
 	const uint32 ResolvedSeed = ResolveSeed();
 

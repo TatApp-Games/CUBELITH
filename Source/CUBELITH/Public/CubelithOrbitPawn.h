@@ -48,6 +48,25 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cubelith|Camera")
 	bool bOrbitEnabled = true;
 
+	/**
+	 * タッチのピンチによるズームをこの Pawn 側で受けるか（旋回とは別の切り替え）。
+	 *
+	 * 選択中のピースがある盤面では 2 本指がピースの 90 度回転にも使われるため、そのジェスチャを
+	 * ACubelithPlayerController が乗っ取っている間だけ false になり、ズームはあちらの
+	 * Cubelith::FTwoFingerGesture の判定から PinchZoomBy で掛かる（同じピンチが二重に効かないように）。
+	 * ホイールのズームはこれでは止まらない（RULES.md 3.3。選択の有無によらず常に効く）。
+	 *
+	 * 人が触る値ではないので EditAnywhere にしない（運転席はコントローラ側）。
+	 */
+	bool bTouchPinchEnabled = true;
+
+	/**
+	 * 2 本指のピンチ 1 回分のズーム（camera.ts の zoomBy）。Scale は「前の指の間隔 / 今の指の間隔」で、
+	 * 1 より小さいと寄る。PinchZoomSensitivity を指数として掛ける（1 で camera.ts と同じ）。
+	 * Pawn 自身のピンチの経路と、コントローラが乗っ取っている間の経路の両方がここを通る
+	 */
+	void PinchZoomBy(double Scale);
+
 	/** ドラッグ 1 px あたりの回転量（度）。camera.ts の ROTATE_SPEED = 0.006 rad/px 相当 */
 	UPROPERTY(EditAnywhere, Category = "Cubelith|Camera", meta = (ClampMin = "0.0"))
 	double RotateSensitivityDegPerPixel = 0.34;
