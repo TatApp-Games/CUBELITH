@@ -30,6 +30,9 @@ class CUBELITH_API ACubelithGameMode : public AGameModeBase
 public:
 	ACubelithGameMode();
 
+	/** クリアの仮表示を出し続けるためだけの Tick（クリアしている間だけ有効になる） */
+	virtual void Tick(float DeltaSeconds) override;
+
 	/**
 	 * ゲーム状態（RULES.md 3.3 / 3.4）。まだ作られていなければ nullptr。
 	 * 所有権は GameMode のまま（TUniquePtr で持つ）なので、呼び出し側は寿命を持たない生ポインタとして読む
@@ -88,6 +91,18 @@ private:
 
 	/** Pawn がまだ整っていなかったときの再試行（タイマーから呼ぶ） */
 	void RetryFrameCamera();
+
+	/**
+	 * クリア判定（RULES.md 3.4）の結果を画面とログに反映する。
+	 *
+	 * 判定そのものは Cubelith::FGame が更新のたびに走らせていて、ここはその結果を受け取るだけ
+	 * （判定のロジックは足さない・変えない）。false → true に変わったときに LogCubelith へ 1 行出し、
+	 * クリアしている間はずっと見えるよう画面に仮の表示を出す。本実装の UI は U4、演出は U5
+	 */
+	void UpdateSolvedDisplay(bool bSolved);
+
+	/** クリアの仮表示を出しているか（= 直近に受け取ったクリア判定の結果） */
+	bool bSolvedShown = false;
 
 	/** ピースを描くアクタ。BeginPlay でワールド原点に湧かせる */
 	UPROPERTY()

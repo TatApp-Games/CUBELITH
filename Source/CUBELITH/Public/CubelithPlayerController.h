@@ -1,25 +1,53 @@
-// クリック / タップでピースを選ぶ PlayerController（RULES.md 3.3「ピース選択」・Docs/SPEC_UE.md 8 章 U3）
-// 移植元は WebMock/src/input/pieceInput.ts の pickPiece / setSelected。
+// ピースの選択とドラッグ移動を受け持つ PlayerController（RULES.md 3.3・Docs/SPEC_UE.md 8 章 U3）
+// 移植元は WebMock/src/input/pieceInput.ts の pickPiece / setSelected / MoveDrag。
 // 押した瞬間にライントレースでピースを引き、当たったピースを選択中にする。
 // 何も無い場所を押しても選択は外さない（RULES.md 3.3。外れるのは「散らし直す」など外からの解除だけで、それは U4）。
 //
-// ドラッグでの移動・カメラとの切り分けは 003、90 度回転と 2 本指ジェスチャは 005。
-// このタスクの時点では、選択中のピースをドラッグするとカメラ（ACubelithOrbitPawn）も回る。
+// ドラッグは押した瞬間に役割が決まり、離すまで変わらない:
+//   ピースを押した  → そのピースをカメラの向きに応じた 2 軸へボクセル単位で動かす（軌道カメラの旋回は止める）
+//   何も無い場所    → 選択は保ったままカメラを旋回させる（ACubelithOrbitPawn::bOrbitEnabled を戻す）
+// ホイール / ピンチのズームは選択の有無によらず効く（ACubelithOrbitPawn が受け持つ）。
+//
+// スナップは U4、90 度回転と 2 本指ジェスチャは 005（ここでは指が 2 本になったら移動を打ち切るだけ）。
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "GameFramework/PlayerController.h"
 
+#include "CubelithAxisMapping.h"
 #include "CubelithPickSamples.h"
 
 #include "CubelithPlayerController.generated.h"
 
 class ACubelithGameMode;
+class ACubelithOrbitPawn;
 class ACubelithPuzzleActor;
 
+namespace Cubelith
+{
+	class FGame;
+}
+
 /**
- * ピースの選択を受け持つ PlayerController。ACubelithGameMode がコンストラクタで PlayerControllerClass に指定する。
+ * ドラッグ 1 本分の役割。押した瞬間に決めて、指 / ボタンを離すまで変えない（RULES.md 3.3）。
+ * UENUM にはしない（Blueprint へ出す必要が無く、.uasset も作らないため）。
+ */
+enum class ECubelithDragMode : uint8
+{
+	/** ドラッグしていない */
+	None,
+
+	/** 押したピースをボクセル単位で動かしている */
+	MovePiece,
+
+	/** 何も無い場所から始めたドラッグ。カメラの旋回に回す（選択は保つ） */
+	OrbitCamera,
+};
+
+/**
+ * ピースの選択とドラッグ移動を受け持つ PlayerController。ACubelithGameMode がコンストラクタで
+ * PlayerControllerClass に指定する。
  *
  * 入力は Enhanced Input の InputAction / InputMappingContext（= `.uasset`）を使わず、PlayerTick で
  * APlayerController から生の入力状態をポーリングして読む（Docs/SPEC_UE.md 0 章・4 章。
@@ -72,15 +100,69 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Cubelith|Input", meta = (ClampMin = "1.0"))
 	double PickTraceDistanceCm = 1000000.0;
 
+	/**
+	 * 1 マス動かすのに必要なドラッグ量（px）の下限（pieceInput.ts の MIN_PIXELS_PER_VOXEL）。
+	 * 基準は「ピースの奥行きでの 1 ボクセルの画面上の大きさ」なので、画面サイズやカメラ距離が変わっても
+	 * 「ボクセル 1 個分ドラッグすれば 1 マス動く」体感になる。極端なズームで感度が壊れないよう両端で丸める
+	 */
+	UPROPERTY(EditAnywhere, Category = "Cubelith|Input", meta = (ClampMin = "1.0"))
+	double MinPixelsPerVoxel = 14.0;
+
+	/** 同じくドラッグ量（px）の上限（pieceInput.ts の MAX_PIXELS_PER_VOXEL） */
+	UPROPERTY(EditAnywhere, Category = "Cubelith|Input", meta = (ClampMin = "1.0"))
+	double MaxPixelsPerVoxel = 160.0;
+
 protected:
 	virtual void BeginPlay() override;
 
 private:
-	/** マウスの左ボタンとタッチの押下の立ち上がりを見て、1 回だけピックを走らせる */
-	void PollPointerPress();
+	/** マウスとタッチの押下・移動・解放をポーリングで拾い、押下の立ち上がり / 立ち下がりを自分で見る */
+	void PollPointer();
 
-	/** 押した瞬間の処理。ピースに当たったときだけ選択を置き換える */
+	/** 押した瞬間の処理。ピースに当たれば選択してドラッグ移動を始め、外れればカメラの旋回に回す */
 	void HandlePointerPressed(const FVector2D& ScreenPosition, bool bTouch);
+
+	/**
+	 * 押したまま動かしたときの処理。ドラッグ移動の最中だけ、開始位置からの画面上の移動量を
+	 * マス数に直して Cubelith::FGame::Move へ流す（pieceInput.ts の onPointerMove の移動の部分）
+	 */
+	void HandlePointerMoved(const FVector2D& ScreenPosition);
+
+	/** 離したときの処理。スナップ（U4）はここに入る。今はドラッグの役割を畳むだけ */
+	void HandlePointerReleased();
+
+	/**
+	 * ドラッグ移動を始める。開始画面座標・ドラッグ軸・感度をこの時点で固定するので、
+	 * 途中でカメラが動いても写像や 1 マスの長さがぶれない（pieceInput.ts の MoveDrag）
+	 */
+	void BeginMoveDrag(int32 PieceId, const FVector2D& ScreenPosition);
+
+	/** ドラッグを畳み、軌道カメラの旋回を「選択中は止める」状態へ戻す（選択は保つ） */
+	void EndDrag();
+
+	/** プレイヤーのカメラの基底（UE のワールド座標）。取れなければ false */
+	bool GetCameraBasis(FVector& OutRight, FVector& OutUp, FVector& OutForward) const;
+
+	/** 今のカメラからドラッグ軸の割り当てを作る（pieceInput.ts の currentAxes）。取れなければ false */
+	bool ComputeDragAxes(Cubelith::FDragAxes& OutAxes) const;
+
+	/**
+	 * ピースの奥行きでの「1 ボクセル = 何 px」（pieceInput.ts の pixelsPerVoxelAt）。
+	 * MinPixelsPerVoxel 〜 MaxPixelsPerVoxel で丸めた値を返す
+	 */
+	double PixelsPerVoxelAt(int32 PieceId) const;
+
+	/** 固定中（RULES.md 3.3「固定」）のピースか。ゲーム状態が無ければ false */
+	bool IsPieceLocked(int32 PieceId) const;
+
+	/** 軌道カメラの旋回の有効・無効を、今の選択とドラッグの役割から決め直す */
+	void UpdateOrbitEnabled();
+
+	/** ゲーム状態。まだ作られていなければ nullptr */
+	Cubelith::FGame* GetGame() const;
+
+	/** 操作しているプレイヤーの軌道カメラ。軌道カメラでなければ nullptr */
+	ACubelithOrbitPawn* GetOrbitPawn() const;
 
 	/**
 	 * 画面座標のピースを拾う。何も無ければ INDEX_NONE（pieceInput.ts の pickPiece）。
@@ -120,4 +202,23 @@ private:
 
 	/** 選択中のピース id（未選択は INDEX_NONE） */
 	int32 SelectedPieceId = INDEX_NONE;
+
+	/** 今のドラッグの役割。押した瞬間に決まり、離すまで変わらない */
+	ECubelithDragMode DragMode = ECubelithDragMode::None;
+
+	/** ドラッグ移動しているピース id（していなければ INDEX_NONE） */
+	int32 DragPieceId = INDEX_NONE;
+
+	/** ドラッグを始めた画面座標（Y は下向きが正）。移動量はここからの差で測る */
+	FVector2D DragStartScreenPosition = FVector2D::ZeroVector;
+
+	/** 開始時に固定したドラッグ軸（画面の右 / 上がどのグリッド軸に当たるか） */
+	Cubelith::FDragAxes ActiveDragAxes;
+
+	/** 開始時に固定した感度（1 ボクセル = 何 px） */
+	double DragPixelsPerVoxel = 1.0;
+
+	/** これまでに Cubelith::FGame::Move へ流したマス数。差分だけを流すために持つ */
+	int32 DragAppliedRight = 0;
+	int32 DragAppliedUp = 0;
 };

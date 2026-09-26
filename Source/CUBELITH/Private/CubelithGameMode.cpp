@@ -1,5 +1,6 @@
 #include "CubelithGameMode.h"
 
+#include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
 #include "Kismet/GameplayStatics.h"
@@ -38,10 +39,29 @@ namespace
 	 */
 	constexpr float FrameCameraRetryIntervalSeconds = 0.01f;
 	constexpr int32 MaxFrameCameraAttempts = 300;
+
+	/**
+	 * クリアの仮表示（AddOnScreenDebugMessage）のキー。同じキーで出し直すと置き換わるので、
+	 * 毎フレーム出しても行が増えない。他の表示とぶつからないよう適当に大きな値にしてある
+	 */
+	constexpr uint64 SolvedMessageKey = 0x4355'4245'4C49'5448ull;
+
+	/**
+	 * 仮表示の寿命（秒）。Tick で毎フレーム出し直すので実際はこの秒数まで持たないが、
+	 * フレーム落ちで点滅しないよう 1 フレームより十分長くしてある
+	 */
+	constexpr float SolvedMessageSeconds = 2.0f;
+
+	/** 仮表示の文言。本実装の UI は U4、演出は U5（Docs/SPEC_UE.md 8 章） */
+	const TCHAR* SolvedMessageText = TEXT("クリア！ 全ピースが立方体に収まった");
 }
 
 ACubelithGameMode::ACubelithGameMode()
 {
+	// Tick はクリアの仮表示を出し続けるためだけに使う。クリアするまでは回さない（UpdateSolvedDisplay が入れる）
+	PrimaryActorTick.bCanEverTick = true;
+	PrimaryActorTick.bStartWithTickEnabled = false;
+
 	// マップ /Game/Maps/Main に PlayerStart が無ければ Pawn はワールド原点に湧く。軌道カメラの注視点は
 	// 立方体の中心（= パズルのアクタを置くワールド原点）なのでそれでよく、マップには手を入れない
 	DefaultPawnClass = ACubelithOrbitPawn::StaticClass();
@@ -67,11 +87,31 @@ void ACubelithGameMode::BeginPlay()
 	StartPuzzle();
 }
 
+void ACubelithGameMode::Tick(float DeltaSeconds)
+{
+	Super::Tick(DeltaSeconds);
+
+	if (!bSolvedShown || GEngine == nullptr)
+	{
+		return;
+	}
+
+	// 同じキーで出し直すと置き換わるので、毎フレーム出せばクリアしている間ずっと見えたままになる
+	// （1 フレームだけ出て消えると人が確認できない）
+	GEngine->AddOnScreenDebugMessage(SolvedMessageKey, SolvedMessageSeconds, FColor::Green, SolvedMessageText);
+}
+
 void ACubelithGameMode::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	if (UWorld* World = GetWorld())
 	{
 		World->GetTimerManager().ClearTimer(FrameCameraTimer);
+	}
+	// 終わったあとも画面に残らないよう仮表示を消す（状態の遷移ではないのでログは出さない）
+	bSolvedShown = false;
+	if (GEngine != nullptr)
+	{
+		GEngine->RemoveOnScreenDebugMessage(SolvedMessageKey);
 	}
 	// FGame は UObject ではないのでここで畳む。OnChange は弱参照越しなので、
 	// 畳む前に呼ばれても消えた GameMode / アクタには触らない
@@ -114,7 +154,7 @@ void ACubelithGameMode::StartPuzzle()
 	// 壊れないよう弱参照で握る
 	TWeakObjectPtr<ACubelithGameMode> WeakThis(this);
 	Game = MakeUnique<Cubelith::FGame>(Puzzle.Pieces, N, Scattered,
-		[WeakThis](TArrayView<const Cubelith::FPlacement> Placements, bool /*bSolved*/)
+		[WeakThis](TArrayView<const Cubelith::FPlacement> Placements, bool bSolved)
 		{
 			ACubelithGameMode* Self = WeakThis.Get();
 			if (Self == nullptr)
@@ -125,6 +165,8 @@ void ACubelithGameMode::StartPuzzle()
 			{
 				Actor->UpdatePlacements(Placements);
 			}
+			// クリア判定は FGame が更新のたびに走らせている（RULES.md 3.4）。ここは結果を見せるだけ
+			Self->UpdateSolvedDisplay(bSolved);
 		});
 
 	// ピースを描くアクタ。原点に置くので、アクタの原点 = 解答空間の中心 = 軌道カメラの注視点になる
@@ -144,6 +186,10 @@ void ACubelithGameMode::StartPuzzle()
 
 	UE_LOG(LogCubelith, Log, TEXT("パズルを開始した: N=%d, M=%d, パズルの回転=%s, seed=%u, ピース数=%d"),
 		N, M, bAllowRotation ? TEXT("あり") : TEXT("なし"), ResolvedSeed, Puzzle.Pieces.Num());
+
+	// FGame は構築時にクリア判定を 1 回走らせるが OnChange は呼ばない。散らした直後は普通クリアではないものの、
+	// 初期状態も同じ経路に通しておく（U4 で散らし直すときに前のクリア表示が残らないようにするため）
+	UpdateSolvedDisplay(Game->Solved());
 
 	// Pawn の生成順に依存するので、まだ湧いていなければ湧くまで短い間隔で試し直す
 	if (!TryFrameCamera())
@@ -230,6 +276,36 @@ bool ACubelithGameMode::TryFrameCamera()
 	}
 
 	return false;
+}
+
+void ACubelithGameMode::UpdateSolvedDisplay(bool bSolved)
+{
+	if (bSolved == bSolvedShown)
+	{
+		return;
+	}
+	bSolvedShown = bSolved;
+
+	// 仮表示を出し続けるための Tick は、クリアしている間だけ回す
+	SetActorTickEnabled(bSolved);
+
+	if (bSolved)
+	{
+		UE_LOG(LogCubelith, Log,
+			TEXT("クリア: 全ピースが N×N×N のどこかに重なりなく収まった（RULES.md 3.4）"));
+		// 次の Tick を待たずに出す（判定の直後に見えるように）
+		if (GEngine != nullptr)
+		{
+			GEngine->AddOnScreenDebugMessage(SolvedMessageKey, SolvedMessageSeconds, FColor::Green, SolvedMessageText);
+		}
+		return;
+	}
+
+	UE_LOG(LogCubelith, Log, TEXT("クリア状態ではなくなった"));
+	if (GEngine != nullptr)
+	{
+		GEngine->RemoveOnScreenDebugMessage(SolvedMessageKey);
+	}
 }
 
 void ACubelithGameMode::RetryFrameCamera()
