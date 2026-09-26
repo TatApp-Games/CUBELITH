@@ -9,6 +9,7 @@
 #include "GameFramework/GameModeBase.h"
 #include "Templates/UniquePtr.h"
 
+#include "CubelithDifficulty.h"
 #include "Game.h"
 
 #include "CubelithGameMode.generated.h"
@@ -19,7 +20,9 @@ class ACubelithPuzzleActor;
  * 既定の難易度（RULES.md 3.1 の N=3・M=4・パズルの回転なし）でパズルを 1 つ作り、
  * ACubelithPuzzleActor に描かせて軌道カメラを合わせる。
  *
- * 難易度の選択・HUD・「次の問題」は U4 で足す。ここではエディタから差し替えられる既定値として持つ。
+ * 難易度は下の UPROPERTY が既定値で、マップ URL のオプション `?n=` / `?m=` / `?rot=` と
+ * コマンドライン引数 `-CubelithN=` / `-CubelithM=` / `-CubelithRotation=` で上書きできる（Docs/SPEC_UE.md 7.7）。
+ * 画面での難易度選択・HUD・「次の問題」は U4 で足す。
  * PlayerController は ACubelithPlayerController（ピースの選択。U3）、HUD は既定のまま使う。
  */
 UCLASS()
@@ -42,15 +45,24 @@ public:
 	/** ピースを描くアクタ。まだ湧いていなければ nullptr */
 	ACubelithPuzzleActor* GetPuzzleActor() const { return PuzzleActor; }
 
-	/** 空間サイズ N（RULES.md 3.1。既定 3） */
+	/**
+	 * 空間サイズ N（RULES.md 3.1。既定 3）。
+	 * `?n=` / `-CubelithN=` のほうが優先される。範囲外は 3..7 に丸める（Docs/SPEC_UE.md 7.7）
+	 */
 	UPROPERTY(EditAnywhere, Category = "Cubelith|Puzzle", meta = (ClampMin = "3", ClampMax = "7"))
 	int32 SpaceSize = 3;
 
-	/** ピース分割数 M（RULES.md 3.1。N=3 の既定は 4） */
+	/**
+	 * ピース分割数 M（RULES.md 3.1。N=3 の既定は 4）。
+	 * `?m=` / `-CubelithM=` のほうが優先される。N ごとの 5 段のプリセットのうち最も近いものへ寄せる
+	 */
 	UPROPERTY(EditAnywhere, Category = "Cubelith|Puzzle", meta = (ClampMin = "2", ClampMax = "27"))
 	int32 PieceCount = 4;
 
-	/** パズルの回転（RULES.md 3.1。既定は「なし」= 全ピースを恒等の向きで散らす） */
+	/**
+	 * パズルの回転（RULES.md 3.1。既定は「なし」= 全ピースを恒等の向きで散らす）。
+	 * `?rot=` / `-CubelithRotation=` のほうが優先される
+	 */
 	UPROPERTY(EditAnywhere, Category = "Cubelith|Puzzle")
 	bool bAllowRotation = false;
 
@@ -66,7 +78,7 @@ public:
 	int64 Seed = -1;
 
 protected:
-	/** マップ URL のオプション `?seed=` を受け取る（Docs/SPEC_UE.md 7.7）。解釈は BeginPlay で行う */
+	/** マップ URL のオプション `?seed=` / `?n=` / `?m=` / `?rot=` を受け取る（Docs/SPEC_UE.md 7.7）。解釈は BeginPlay で行う */
 	virtual void InitGame(const FString& MapName, const FString& Options, FString& ErrorMessage) override;
 
 	virtual void BeginPlay() override;
@@ -82,6 +94,13 @@ private:
 	 * 選んだ値とその経路、無視した不正な指定をログに出す
 	 */
 	uint32 ResolveSeed();
+
+	/**
+	 * 実際に使う難易度（N / M / パズルの回転）を決める（Docs/SPEC_UE.md 7.7 の優先順位）。
+	 * コマンドラインをここで読み、解釈そのものは Cubelith::ResolveDifficulty に任せる。
+	 * 選んだ値とその経路、無視した指定・寄せた指定をログに出す
+	 */
+	Cubelith::FDifficultyResolution ResolveDifficulty();
 
 	/**
 	 * プレイヤーの Pawn が軌道カメラなら、注視点と距離をパズルに合わせる。合わせられたら true。
@@ -116,6 +135,15 @@ private:
 
 	/** InitGame で読んだマップ URL のオプション `?seed=` の値。未指定なら空文字 */
 	FString SeedOptionText;
+
+	/** InitGame で読んだマップ URL のオプション `?n=` の値。未指定なら空文字 */
+	FString SpaceSizeOptionText;
+
+	/** InitGame で読んだマップ URL のオプション `?m=` の値。未指定なら空文字 */
+	FString PieceCountOptionText;
+
+	/** InitGame で読んだマップ URL のオプション `?rot=` の値。未指定なら空文字 */
+	FString RotationOptionText;
 
 	/** TryFrameCamera の再試行タイマー */
 	FTimerHandle FrameCameraTimer;
