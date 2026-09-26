@@ -1,6 +1,7 @@
-// ピース選択・ドラッグ移動・90 度回転の実装。移植元は WebMock/src/input/pieceInput.ts
+// ピース選択・ドラッグ移動・90 度回転・マグネットスナップの実装。移植元は WebMock/src/input/pieceInput.ts
 // （pickPiece / setSelected / MoveDrag / currentAxes / pixelsPerVoxelAt / orbit.enabled の扱い、
-//   applyTwoFinger / RotateDrag / updateRotateDrag / commitRotateDrag）
+//   applyTwoFinger / RotateDrag / updateRotateDrag / commitRotateDrag）と、
+// スナップの配線は WebMock/src/main.ts（snap.refresh / snap.release / onSnap / snapMotion の掛け外し）
 
 #include "CubelithPlayerController.h"
 
@@ -18,7 +19,10 @@
 #include "CubelithLog.h"
 #include "CubelithOrbitPawn.h"
 #include "CubelithPuzzleActor.h"
+#include "CubelithSnapControl.h"
+#include "CubelithSnapMotion.h"
 #include "Game.h"
+#include "Grid.h"
 
 namespace
 {
@@ -74,6 +78,19 @@ void ACubelithPlayerController::BeginPlay()
 
 	// 未選択なので旋回は有効。Pawn がまだ湧いていなくても bOrbitEnabled の既定値が同じなので困らない
 	UpdateOrbitEnabled();
+
+	// 人がエディタで変えた補間の時間を反映する（走っている補間にもそのまま効く）
+	SnapMotion.SetDurationSeconds(FMath::Max(0.0, SnapDurationSeconds));
+
+	// 配置が変わったら候補を計算し直す（main.ts が game の onChange で snap.refresh を呼ぶのと同じ場所）。
+	// AddUObject なのでこのコントローラが消えたら自動で飛ばされる ＝ 明示的な解除は要らない
+	if (ACubelithGameMode* GameMode = GetCubelithGameMode())
+	{
+		GameMode->OnPlacementsChanged.AddUObject(this, &ACubelithPlayerController::HandlePlacementsChanged);
+	}
+
+	// パズルが既に開いていれば初期状態の候補を出す（開いていなければ最初の配置の変化で出る）
+	RefreshSnapHint();
 }
 
 void ACubelithPlayerController::PlayerTick(float DeltaTime)
@@ -81,6 +98,9 @@ void ACubelithPlayerController::PlayerTick(float DeltaTime)
 	Super::PlayerTick(DeltaTime);
 
 	PollPointer();
+
+	// スナップの補間はポーリング入力と同じ場所で進める（main.ts の session.update と同じ役目）
+	UpdateSnapMotion();
 }
 
 void ACubelithPlayerController::PollPointer()
@@ -298,6 +318,9 @@ void ACubelithPlayerController::HandlePointerMoved(const FVector2D& ScreenPositi
 	DragAppliedRight = StepsRight;
 	DragAppliedUp = StepsUp;
 
+	// 手で動かしたら前のスナップの補間は用済み（main.ts の onMove が snapMotion.cancel を呼ぶのと同じ）
+	CancelSnapMotion(DragPieceId);
+
 	// 重なりは許す（RULES.md 3.3「操作中はピース同士が重なってもよい」）ので、Move はそのまま通す。
 	// 配置が変われば FGame の OnChange から ACubelithPuzzleActor::UpdatePlacements が呼ばれる
 	Game->Move(DragPieceId, Cubelith::AddVec3(
@@ -307,8 +330,183 @@ void ACubelithPlayerController::HandlePointerMoved(const FVector2D& ScreenPositi
 
 void ACubelithPlayerController::HandlePointerReleased()
 {
-	// マグネット・スナップ（RULES.md 3.5）は U4 でここに入る
+	// 吸着させるのは「そのピースを動かしていたドラッグ」だけ。カメラの旋回では何も吸い付かず、
+	// 右ボタンの自由回転は EndDrag の中で向きの確定に回る（pieceInput.ts が回転のときは
+	// onRelease を呼ばないのと同じ）。EndDrag が状態を畳むので、先に控えておく
+	const int32 ReleasedPieceId = (DragMode == ECubelithDragMode::MovePiece) ? DragPieceId : INDEX_NONE;
+
 	EndDrag();
+
+	// マグネット・スナップ（RULES.md 3.5）。指 / ボタンを離したこの時点で吸着させる
+	ApplySnapOnRelease(ReleasedPieceId);
+}
+
+void ACubelithPlayerController::ApplySnapOnRelease(int32 PieceId)
+{
+	if (PieceId == INDEX_NONE)
+	{
+		return;
+	}
+
+	Cubelith::FGame* Game = GetGame();
+	if (Game == nullptr)
+	{
+		return;
+	}
+
+	// 固定中のピースは吸い付かない（RULES.md 3.3。吸い付いて動いてしまわないように。
+	// pieceInput.ts が onRelease を isLocked で弾いているのと同じ）
+	if (IsPieceLocked(PieceId))
+	{
+		return;
+	}
+
+	EnsureSnapControl();
+
+	const TOptional<Cubelith::FSnapTarget> Target = SnapControl.Release(Game->Placements(), PieceId);
+
+	// Release は吸着の有無によらず発光を消す。その結果を見た目へ反映する
+	if (ACubelithPuzzleActor* PuzzleActor = GetPuzzleActor())
+	{
+		PuzzleActor->SetSnapHint(SnapControl.HintedPieceId());
+	}
+
+	if (!Target.IsSet())
+	{
+		return;
+	}
+
+	// ポインタが指す先は下の Move で無効になるので、必要な値を先に写す
+	const Cubelith::FVec3 FromPosition = Target->From.Position;
+	const Cubelith::FVec3 ToPosition = Target->To.Position;
+
+	// 論理上の配置は整数座標のまま即座に確定させる（ここで OnChange が回り、描画と候補の再計算が走る）。
+	// 向きは変えない（Solve.h の SnapCandidate は位置だけを動かす）ので Move で足りる
+	Game->Move(PieceId, Cubelith::SubVec3(ToPosition, FromPosition));
+
+	// 見た目だけを 100〜150 ms かけて追いつかせる。「移動前 − 移動後」から 0 へ（snapMotion.ts の start）
+	SnapMotion.Start(PieceId, Cubelith::SubVec3(FromPosition, ToPosition),
+		(GetWorld() != nullptr) ? GetWorld()->GetTimeSeconds() : 0.0, SnapOffsetBuffer);
+	ApplySnapOffsets();
+
+	// 吸い付いた瞬間に鳴らす（RULES.md 3.5）。音が割り当てられていなければ鳴らない
+	if (ACubelithGameMode* GameMode = GetCubelithGameMode())
+	{
+		GameMode->PlaySnapSound();
+	}
+
+	UE_LOG(LogCubelith, Verbose, TEXT("ピース %d を吸着させた: (%d, %d, %d) → (%d, %d, %d)"),
+		PieceId, FromPosition.X, FromPosition.Y, FromPosition.Z, ToPosition.X, ToPosition.Y, ToPosition.Z);
+}
+
+void ACubelithPlayerController::RefreshSnapHint()
+{
+	const Cubelith::FGame* Game = GetGame();
+	if (Game == nullptr)
+	{
+		return;
+	}
+
+	EnsureSnapControl();
+
+	// 固定中のピースは吸い付かないので候補も出さない（main.ts が lockKindOf を見て null を渡すのと同じ）
+	const int32 ActivePieceId =
+		(SelectedPieceId != INDEX_NONE && !IsPieceLocked(SelectedPieceId)) ? SelectedPieceId : INDEX_NONE;
+
+	// 光らせる対象が変わったときだけ見た目へ流す（FSnapControl が変化を見てくれる）
+	if (!SnapControl.Refresh(Game->Placements(), ActivePieceId))
+	{
+		return;
+	}
+
+	if (ACubelithPuzzleActor* PuzzleActor = GetPuzzleActor())
+	{
+		PuzzleActor->SetSnapHint(SnapControl.HintedPieceId());
+	}
+}
+
+void ACubelithPlayerController::HandlePlacementsChanged(TArrayView<const Cubelith::FPlacement> Placements)
+{
+	// 配置が変わったこのタイミングだけで候補を計算し直す（毎フレームは回さない。RULES.md 5.1）。
+	// 渡された配置ではなく FGame から読み直すのは、確定した後の状態を 1 か所から見るためで、
+	// OnChange は配置を差し替えた後に呼ばれるので中身は同じ
+	RefreshSnapHint();
+}
+
+void ACubelithPlayerController::CancelSnapMotion(int32 PieceId)
+{
+	if (PieceId == INDEX_NONE || !SnapMotion.IsRunning(PieceId))
+	{
+		return;
+	}
+
+	SnapMotion.Cancel(PieceId, SnapOffsetBuffer);
+	ApplySnapOffsets();
+}
+
+void ACubelithPlayerController::UpdateSnapMotion()
+{
+	if (SnapMotion.Num() == 0)
+	{
+		return;
+	}
+
+	const UWorld* World = GetWorld();
+	if (World == nullptr)
+	{
+		return;
+	}
+
+	SnapMotion.Update(World->GetTimeSeconds(), SnapOffsetBuffer);
+	ApplySnapOffsets();
+}
+
+void ACubelithPlayerController::ApplySnapOffsets()
+{
+	if (SnapOffsetBuffer.Num() == 0)
+	{
+		return;
+	}
+
+	ACubelithPuzzleActor* PuzzleActor = GetPuzzleActor();
+	if (PuzzleActor == nullptr)
+	{
+		return;
+	}
+
+	for (const Cubelith::FSnapOffsetUpdate& Update : SnapOffsetBuffer)
+	{
+		if (Update.bCleared)
+		{
+			PuzzleActor->ClearViewOffset(Update.PieceId);
+		}
+		else
+		{
+			PuzzleActor->SetViewOffset(Update.PieceId, Update.Offset);
+		}
+	}
+}
+
+void ACubelithPlayerController::EnsureSnapControl()
+{
+	const Cubelith::FGame* Game = GetGame();
+	if (Game == nullptr)
+	{
+		return;
+	}
+
+	// 同じ盤面なら作り直さない。ピース数が変わったらパズルが入れ替わっている（U4 の「次の問題」）
+	if (SnapControlPieceCount == Game->Pieces().Num() && SnapControlPieceCount > 0)
+	{
+		return;
+	}
+
+	SnapControl = Cubelith::FSnapControl(Game->Pieces(), Game->N());
+	SnapControlPieceCount = Game->Pieces().Num();
+
+	// 前の盤面の補間が残っていても新しい盤面では意味が無い（見た目は次の UpdatePlacements で整う）
+	SnapMotion.CancelAll(SnapOffsetBuffer);
+	ApplySnapOffsets();
 }
 
 void ACubelithPlayerController::BeginMoveDrag(int32 PieceId, const FVector2D& ScreenPosition)
@@ -451,6 +649,9 @@ void ACubelithPlayerController::CommitRotateDrag()
 		PuzzleActor->ClearFreeRotation(PieceId);
 	}
 
+	// 回したら前のスナップの補間は用済み（main.ts の onRotate / onFreeRotateEnd と同じ）
+	CancelSnapMotion(PieceId);
+
 	Cubelith::FGame* Game = GetGame();
 	const Cubelith::FPlacement* Placement = (Game != nullptr) ? Game->PlacementOf(PieceId) : nullptr;
 	if (Game == nullptr || Placement == nullptr)
@@ -469,12 +670,17 @@ void ACubelithPlayerController::CommitRotateDrag()
 	{
 		UE_LOG(LogCubelith, Log,
 			TEXT("ピース %d の自由回転は向き %d のままに落ちた（90 度に届かなかった）"), PieceId, PreviousOrientation);
+		// 向きが変わらなければ OnChange も来ないので、ここで候補を見直す必要も無い
 		return;
 	}
 
 	Game->Place(PieceId, NextOrientation, Position);
 	UE_LOG(LogCubelith, Log, TEXT("ピース %d を回した: 向き %d → %d（右ボタンのドラッグを離して確定）"),
 		PieceId, PreviousOrientation, NextOrientation);
+
+	// 向きが変わればスナップ候補も変わる（Place の OnChange で既に計算し直されているが、
+	// main.ts の onFreeRotateEnd と同じ場所に置いて「回転の確定後に見直す」経路を明示しておく）
+	RefreshSnapHint();
 }
 
 void ACubelithPlayerController::ApplyTwoFinger(const FVector2D& First, const FVector2D& Second)
@@ -530,6 +736,9 @@ void ACubelithPlayerController::ApplyTwoFinger(const FVector2D& First, const FVe
 	{
 		return;
 	}
+
+	// 回したら前のスナップの補間は用済み（main.ts の onRotate と同じ）
+	CancelSnapMotion(PieceId);
 
 	// 局所原点まわりの 90 度（RULES.md 3.3）。1 回のジェスチャで 1 回だけ回る
 	// （FTwoFingerGesture が回転を返した時点で Done になり、指を離すまで次を返さない）
@@ -689,6 +898,9 @@ void ACubelithPlayerController::SetSelectedPiece(int32 PieceId)
 
 	// 選択中はドラッグをピース操作に回す（pieceInput.ts の setSelected が orbit.enabled を切り替えるのと同じ）
 	UpdateOrbitEnabled();
+
+	// 候補は選択中のピースについてだけ出す（main.ts の onSelectionChange が snap.refresh を呼ぶのと同じ場所）
+	RefreshSnapHint();
 
 	if (PieceId == INDEX_NONE)
 	{

@@ -8,6 +8,7 @@
 #include "Misc/CommandLine.h"
 #include "Misc/DateTime.h"
 #include "Misc/Parse.h"
+#include "Sound/SoundBase.h"
 #include "TimerManager.h"
 
 #include "CubelithDifficulty.h"
@@ -198,6 +199,9 @@ void ACubelithGameMode::StartPuzzle()
 			}
 			// クリア判定は FGame が更新のたびに走らせている（RULES.md 3.4）。ここは結果を見せるだけ
 			Self->UpdateSolvedDisplay(bSolved);
+			// 操作側（ACubelithPlayerController）へ中継する。スナップ候補の発光を計算し直すきっかけ
+			// （RULES.md 5.1。毎フレームは回さず、配置が変わったこのタイミングだけで見る）
+			Self->OnPlacementsChanged.Broadcast(Placements);
 		});
 
 	// ピースを描くアクタ。原点に置くので、アクタの原点 = 解答空間の中心 = 軌道カメラの注視点になる
@@ -344,6 +348,20 @@ bool ACubelithGameMode::TryFrameCamera()
 	}
 
 	return false;
+}
+
+void ACubelithGameMode::PlaySnapSound()
+{
+	if (SnapSound == nullptr)
+	{
+		// 人がまだ音を割り当てていない（`.uasset` は人が作る。Docs/SPEC_UE.md 0 章）。
+		// 吸着ごとに来るので警告は出さない（ログが埋まる）
+		return;
+	}
+
+	// 解釈: 2D（定位なし）で鳴らす。モバイルの縦持ちでピースは常に画面内にあり、
+	// 音の来る向きを付ける意味が薄いため
+	UGameplayStatics::PlaySound2D(this, SnapSound);
 }
 
 void ACubelithGameMode::UpdateSolvedDisplay(bool bSolved)
