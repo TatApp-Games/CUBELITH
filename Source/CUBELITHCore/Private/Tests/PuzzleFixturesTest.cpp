@@ -1,6 +1,6 @@
 // 照合データ（Docs/FIXTURES.md の puzzle_n{N}_m{M}.json）と生成結果の一致を確かめる（RULES.md 3.6）
 // 25 ファイル × 6 ケース（allowRotation が false → true、その中で puzzleSeeds の順）を全部回す
-// このファイルで比べるのは pieces と solution。scatter / reshuffleWithoutHints は 006、hintPieceIds / reshuffleWithHints は 007 で足す
+// このファイルで比べるのは pieces / solution / scatter / reshuffleWithoutHints。hintPieceIds / reshuffleWithHints は 007 で足す
 // WebMock/src/core のファイルとの 1 対 1 の対象外（照合データのファイルに合わせてテスト側の都合で切ったファイル）
 // ケース数が多いので、一致しているときは記録を増やさず、食い違ったときだけ AddError してそのケースの残りを打ち切る
 
@@ -27,7 +27,7 @@ namespace CubelithCoreTests
 			bool bAllowRotation = false;
 			FString FileName;
 			int32 CaseIndex = 0;
-			/** ケースのオブジェクトそのもの。pieces / solution（006・007 は scatter なども）をここから読む */
+			/** ケースのオブジェクトそのもの。pieces / solution / scatter（007 は hintPieceIds なども）をここから読む */
 			TSharedPtr<FJsonObject> Json;
 		};
 
@@ -290,6 +290,107 @@ namespace CubelithCoreTests
 
 			return true;
 		}
+
+		/**
+		 * 配置の配列（M 件）を照合データの値と 1 件ずつ比べる。
+		 * 食い違ったら AddError して false（そのケースの残りは見ない）
+		 */
+		bool ComparePlacements(FAutomationTestBase& Test, const FPuzzleCase& Case, const TCHAR* FieldName,
+			const TArray<Cubelith::FPlacement>& Expected, const TArray<Cubelith::FPlacement>& Actual)
+		{
+			if (Expected.Num() != Case.M || Actual.Num() != Case.M)
+			{
+				Test.AddError(FString::Printf(TEXT("%s: %s の件数が M=%d でない（照合データ %d / 生成結果 %d）"),
+					*Describe(Case), FieldName, Case.M, Expected.Num(), Actual.Num()));
+				return false;
+			}
+
+			for (int32 Index = 0; Index < Case.M; ++Index)
+			{
+				const Cubelith::FPlacement& E = Expected[Index];
+				const Cubelith::FPlacement& A = Actual[Index];
+
+				// pieceId / orientation / position を並びも含めて比べる
+				if (A != E)
+				{
+					Test.AddError(FString::Printf(
+						TEXT("%s: %s[%d] が違う（照合データ {id %d, 向き %d, (%d,%d,%d)} / 生成結果 {id %d, 向き %d, (%d,%d,%d)}）"),
+						*Describe(Case), FieldName, Index,
+						E.PieceId, E.Orientation, E.Position.X, E.Position.Y, E.Position.Z,
+						A.PieceId, A.Orientation, A.Position.X, A.Position.Y, A.Position.Z));
+					return false;
+				}
+				// 並びは Pieces の並び（id の昇順。Docs/FIXTURES.md「共通の表し方」）
+				if (E.PieceId != Index)
+				{
+					Test.AddError(FString::Printf(TEXT("%s: 照合データの %s[%d].pieceId が %d（期待 %d）"),
+						*Describe(Case), FieldName, Index, E.PieceId, Index));
+					return false;
+				}
+				// allowRotation が false のケースは全ピースの向きが 0（Docs/FIXTURES.md）
+				if (!Case.bAllowRotation && E.Orientation != Cubelith::IdentityOrientation)
+				{
+					Test.AddError(FString::Printf(TEXT("%s: allowRotation が false なのに %s[%d] の向きが %d"),
+						*Describe(Case), FieldName, Index, E.Orientation));
+					return false;
+				}
+			}
+
+			return true;
+		}
+
+		/**
+		 * 1 ケース分の scatter と reshuffleWithoutHints を比べる（Docs/FIXTURES.md「各ケースの作り方」の 2 と 3）。
+		 * 食い違ったら AddError して false（そのケースの残りは見ない）
+		 */
+		bool CheckScatter(FAutomationTestBase& Test, const FPuzzleCase& Case)
+		{
+			FString Error;
+
+			TArray<Cubelith::FPlacement> ExpectedScatter;
+			if (!ReadPlacementArray(Case.Json, TEXT("scatter"), ExpectedScatter, Error))
+			{
+				Test.AddError(FString::Printf(TEXT("%s: %s"), *Describe(Case), *Error));
+				return false;
+			}
+
+			TArray<Cubelith::FPlacement> ExpectedReshuffle;
+			if (!ReadPlacementArray(Case.Json, TEXT("reshuffleWithoutHints"), ExpectedReshuffle, Error))
+			{
+				Test.AddError(FString::Printf(TEXT("%s: %s"), *Describe(Case), *Error));
+				return false;
+			}
+
+			// 1: generatePuzzle(n, m, seed) の pieces
+			const TArray<Cubelith::FPiece> Pieces = Cubelith::GeneratePieces(Case.N, Case.M, Case.Seed);
+
+			// 2: scatterPlacements(pieces, n, seed, { allowRotation })
+			Cubelith::FScatterOptions ScatterOptions;
+			ScatterOptions.bAllowRotation = Case.bAllowRotation;
+			const TArray<Cubelith::FPlacement> Scatter =
+				Cubelith::ScatterPlacements(Pieces, Case.N, Case.Seed, ScatterOptions);
+
+			// 3: scatterPlacements(pieces, n, seed, { allowRotation, keep: [] })。
+			// keep の空配列は省略と同じ意味だが、TS の呼び出しの形を写すために別のオプションを作って渡す
+			Cubelith::FScatterOptions ReshuffleOptions;
+			ReshuffleOptions.bAllowRotation = Case.bAllowRotation;
+			ReshuffleOptions.Keep.Reset();
+			const TArray<Cubelith::FPlacement> Reshuffle =
+				Cubelith::ScatterPlacements(Pieces, Case.N, Case.Seed, ReshuffleOptions);
+
+			if (!ComparePlacements(Test, Case, TEXT("scatter"), ExpectedScatter, Scatter))
+			{
+				return false;
+			}
+			// RULES.md 3.3「やり直し」のとおり scatter と同じ配置になるが、
+			// scatter と等しいことを見るだけにせず JSON の値と比べる（Docs/FIXTURES.md）
+			if (!ComparePlacements(Test, Case, TEXT("reshuffleWithoutHints"), ExpectedReshuffle, Reshuffle))
+			{
+				return false;
+			}
+
+			return true;
+		}
 	}
 }
 
@@ -315,6 +416,33 @@ bool FCubelithPuzzleFixturesPiecesAndSolutionTest::RunTest(const FString& Parame
 	for (const PuzzleFixturesDetail::FPuzzleCase& Case : Cases)
 	{
 		PuzzleFixturesDetail::CheckPiecesAndSolution(*this, Case);
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCubelithPuzzleFixturesScatterTest, "CUBELITH.Core.Fixtures.PuzzleScatter",
+	EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::ProductFilter)
+
+bool FCubelithPuzzleFixturesScatterTest::RunTest(const FString& Parameters)
+{
+	using namespace CubelithCoreTests;
+
+	FString Error;
+	TArray<PuzzleFixturesDetail::FPuzzleCase> Cases;
+	if (!PuzzleFixturesDetail::LoadPuzzleCases(Cases, Error))
+	{
+		AddError(Error);
+		return false;
+	}
+
+	// 25 ファイル（N と M のプリセットの組み合わせ）× 6 ケース（Docs/FIXTURES.md）
+	TestEqual(TEXT("ケースの総数"), Cases.Num(), 150);
+
+	// scatter は allowRotation とシードで変わるので、6 ケースそれぞれで JSON の値と比べる
+	for (const PuzzleFixturesDetail::FPuzzleCase& Case : Cases)
+	{
+		PuzzleFixturesDetail::CheckScatter(*this, Case);
 	}
 
 	return true;
