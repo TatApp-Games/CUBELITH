@@ -4,13 +4,16 @@
 // マテリアルは仮（U2 の段階。すりガラスと発光コアは U5 で人が作る）
 // U3 で選択の強調（SetSelectedPiece）と、回転中の 90 度に縛らない見せ方（SetFreeRotation）を足した
 // U4 でスナップ候補の仮の発光（SetSnapHint）と、表示だけのずれ（SetViewOffset / ClearViewOffset）を足した
+// U4 で固定の鍵アイコンの仮表示（SetLockIcon。RULES.md 6 章）も足した（銀 = 手動の固定・金 = ヒント）
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "Containers/ArrayView.h"
 #include "GameFramework/Actor.h"
+#include "Misc/Optional.h"
 
+#include "Game.h"
 #include "Piece.h"
 
 #include "CubelithPuzzleActor.generated.h"
@@ -119,6 +122,23 @@ public:
 	/** 表示だけのずれを解いて論理位置どおりに戻す（掛かっていなければ何もしない） */
 	void ClearViewOffset(int32 PieceId);
 
+	/**
+	 * 固定（ロック）の鍵アイコンを出す / 消す（RULES.md 6 章。pieces.ts の setLockIcon）。
+	 * Kind が未設定なら消す（固定していない状態もそのまま渡せる形にしてあるので、
+	 * 呼び出し側は Cubelith::FGame::LockKindOf の戻り値をそのまま流せる）。
+	 *
+	 * アイコンは**そのピースの各ボクセルの中心**に 1 個ずつ出し、ピースが動けば追従する
+	 * （UpdatePlacements と同じ経路で位置を書き直す）。色は銀 = 手動の固定 / 金 = ヒントで、
+	 * メッシュ・大きさ・色はすべて UPROPERTY で人が差し替えられる（下の LockIcon* / *LockIconColor）。
+	 *
+	 * RULES.md 6 章の「そのピースの内部発光コアは消す」はここでは扱わない
+	 * （内部発光コア自体が U5 で人が作るマテリアルなので、消す相手がまだ無い。Docs/SPEC_UE.md 4 章）。
+	 */
+	void SetLockIcon(int32 PieceId, const TOptional<Cubelith::ELockKind>& Kind);
+
+	/** そのピースに出している鍵アイコンの種類（出していなければ未設定） */
+	TOptional<Cubelith::ELockKind> GetLockIcon(int32 PieceId) const;
+
 	/** ボクセル 1 個のメッシュ。既定はエンジンの立方体 /Engine/BasicShapes/Cube（1 辺 100 cm） */
 	UPROPERTY(EditAnywhere, Category = "Cubelith|Render")
 	TObjectPtr<UStaticMesh> VoxelMesh;
@@ -176,6 +196,47 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Cubelith|Render", meta = (ClampMin = "0.0"))
 	float SnapHintBrightnessScale = 1.25f;
 
+	/**
+	 * 固定の鍵アイコンに使うメッシュ（RULES.md 6 章）。既定はエンジンの球 /Engine/BasicShapes/Sphere で、
+	 * **本物の南京錠のメッシュ / アイコンは人が後で入れる**（`.uasset` は AI が作らない。Docs/SPEC_UE.md 0 章）。
+	 * 空ならアイコンを出さない（警告は SetLockIcon のときに 1 回だけ出す）
+	 */
+	UPROPERTY(EditAnywhere, Category = "Cubelith|Lock")
+	TObjectPtr<UStaticMesh> LockIconMesh;
+
+	/**
+	 * 鍵アイコンのマテリアル。既定はボクセルと同じ /Engine/BasicShapes/BasicShapeMaterial で、
+	 * 固定の種類ごとに UMaterialInstanceDynamic を作って LockIconColorParameterName へ銀 / 金を流す
+	 */
+	UPROPERTY(EditAnywhere, Category = "Cubelith|Lock")
+	TObjectPtr<UMaterialInterface> LockIconMaterial;
+
+	/** 鍵アイコンの色を流し込むベクトルパラメータの名前（マテリアルに無いと色が付かない） */
+	UPROPERTY(EditAnywhere, Category = "Cubelith|Lock")
+	FName LockIconColorParameterName = TEXT("Color");
+
+	/**
+	 * 鍵アイコン 1 個の大きさの、ボクセル 1 マスに対する比（既定 0.5 = 半マス。
+	 * lockIcons.ts の ICON_SIZE と同じ）。
+	 *
+	 * 解釈: ピースのボクセルは VoxelFillRatio（既定 0.96）でわずかに縮めてあるので、それより小さくすると
+	 * アイコンがボクセルの中に見える。大きすぎると斜めから見たときに隣のアイコンと重なって
+	 * ピースの形が読みにくくなる。最後は人がこの値で調整する
+	 */
+	UPROPERTY(EditAnywhere, Category = "Cubelith|Lock", meta = (ClampMin = "0.01", ClampMax = "1.0"))
+	float LockIconSizeRatio = 0.5f;
+
+	/**
+	 * 手動の固定の鍵アイコンの色（RULES.md 6 章の「銀」。lockIcons.ts の manual の胴の色に寄せてある）。
+	 * ヒントの金と一目で見分けられればよい仮の色なので、人がエディタで調整する
+	 */
+	UPROPERTY(EditAnywhere, Category = "Cubelith|Lock")
+	FLinearColor ManualLockIconColor = FLinearColor(0.85f, 0.88f, 0.94f);
+
+	/** ヒントの固定の鍵アイコンの色（RULES.md 6 章の「金」。lockIcons.ts の hint の胴の色に寄せてある） */
+	UPROPERTY(EditAnywhere, Category = "Cubelith|Lock")
+	FLinearColor HintLockIconColor = FLinearColor(1.0f, 0.78f, 0.12f);
+
 private:
 	/**
 	 * 1 ピース分のインスタンスを書き直す（pieces.ts の applyPlacement）。表示だけの自由回転はここで足す。
@@ -198,6 +259,29 @@ private:
 
 	/** メッシュ 1 個の 1 辺の長さ（cm）。インスタンスのスケールをここから決める */
 	double GetVoxelMeshSizeCm() const;
+
+	/**
+	 * 鍵アイコンのインスタンスを種類ごとに作り直す（固定中のピースは多くても 27 個・アイコンは
+	 * 合わせても N^3 個なので、差分を追うより毎回作り直すほうが単純で取り違えが起きない）。
+	 * 呼ぶのは「アイコンの有無 / 種類が変わったとき」と「アイコンを出しているピースの配置が変わったとき」だけ
+	 */
+	void RebuildLockIcons();
+
+	/** 固定の種類に対応する鍵アイコンのコンポーネント（Build 前なら nullptr） */
+	UInstancedStaticMeshComponent* GetLockIconMeshComponent(Cubelith::ELockKind Kind) const;
+
+	/** ピース 1 個分の鍵アイコンの変換を、そのピースの各ボクセルの中心に 1 個ずつ足す */
+	void AppendLockIconTransforms(
+		int32 PieceId, const FVector& CenterOffset, const FVector& IconScale, TArray<FTransform>& OutTransforms) const;
+
+	/** 鍵アイコン 1 個のスケール（メッシュの 1 辺をボクセル 1 マスにしてから LockIconSizeRatio だけ縮める） */
+	FVector GetLockIconScale() const;
+
+	/** 鍵アイコンのメッシュ 1 個の 1 辺の長さ（cm）。GetVoxelMeshSizeCm と同じ測り方 */
+	double GetLockIconMeshSizeCm() const;
+
+	/** 鍵アイコンのコンポーネント 1 つを作る（Build から種類ごとに呼ぶ）。作れなければ nullptr */
+	UInstancedStaticMeshComponent* CreateLockIconMeshComponent(Cubelith::ELockKind Kind);
 
 	/** ピース id からピースを引く。未知の id なら nullptr */
 	const Cubelith::FPiece* FindPiece(int32 PieceId) const;
@@ -243,6 +327,23 @@ private:
 	 * スナップの補間移動（Cubelith::FSnapMotion）が毎フレーム書き換える
 	 */
 	TMap<int32, FVector> ViewOffsets;
+
+	/**
+	 * 鍵アイコンを出しているピース id → 固定の種類（pieces.ts の lockIcons）。
+	 * 出していないピースは入らない（= 固定していないピース）
+	 */
+	TMap<int32, Cubelith::ELockKind> LockIcons;
+
+	/**
+	 * 手動の固定の鍵アイコン（銀）のインスタンス群。**固定の種類ごとに 1 コンポーネント**にしてあるので、
+	 * 増えるドローコールは最大 2 つで済む（ボクセルごとにコンポーネントを作らない。lockIcons.ts と同じ考え）
+	 */
+	UPROPERTY()
+	TObjectPtr<UInstancedStaticMeshComponent> ManualLockIcons;
+
+	/** ヒントの固定の鍵アイコン（金）のインスタンス群 */
+	UPROPERTY()
+	TObjectPtr<UInstancedStaticMeshComponent> HintLockIcons;
 
 	/** スナップ候補があるピース id（無ければ INDEX_NONE。pieces.ts の snapHinted） */
 	int32 SnapHintPieceId = INDEX_NONE;

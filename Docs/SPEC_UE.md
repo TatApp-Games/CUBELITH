@@ -1,6 +1,6 @@
 # CUBELITH — UE 版 実装仕様
 
-ステータス: U0 の着手前に決めることを反映（2026-09-26）。残る「未定」は 4 章（対象端末・鍵アイコン）と 10 章。
+ステータス: U0 の着手前に決めることを反映（2026-09-26）。残る「未定」は 4 章（対象端末）と 10 章。
 
 - **ゲームルールの正は `RULES.md`**（Web 版・UE 版で共通）。この文書は「それを UE5 でどう実装するか」の正
 - 章番号は RULES.md と共通の番号体系。この文書は 0・4・7〜10 章を持ち、1・2・3・5・6 章（ルール）は RULES.md にある
@@ -33,7 +33,7 @@
 | すりガラス（原典 4.2） | 半透明マテリアル（Roughness 高め）+ Fake 屈折 | 人 |
 | 内部発光コア（`src/render/glowCores.ts`） | Emissive をサイン波で明滅させるマテリアル。ピースごとの位相はインスタンスごとの値（Per-Instance Custom Data）で渡す | 人（値の受け渡しは AI） |
 | 選択・スナップ候補の発光（RULES.md 3.3 / 5.1） | マテリアルのパラメータ。U4 までは**仮の色の持ち上げ**で、`ACubelithPuzzleActor` がピースごとの `UMaterialInstanceDynamic` の `ColorParameterName`（既定 `Color`）へ流す値を変える。選択は `SetSelectedPiece`（白へ寄せてから明るくする。`SelectionWhitenAmount` / `SelectionBrightnessScale`）、スナップ候補は `SetSnapHint`（明るくするだけ。`SnapHintBrightnessScale`。既定 1.25）で、**重なったときは選択が優先**（選択中のピースは白へ寄って既に目立っているため）。強さはすべて `UPROPERTY(EditAnywhere)` なので人がエディタで調整できる。Emissive での本実装は U5 | 人と AI |
-| 固定の鍵アイコン（RULES.md 6 章） | 未定 | — |
+| 固定の鍵アイコン（RULES.md 6 章） | 固定中のピースの**各ボクセルの中心**に小さな形を 1 個ずつ出す。U4 までは**仮の見せ方**で、`ACubelithPuzzleActor::SetLockIcon`（`Cubelith::FGame::LockKindOf` の戻り値をそのまま渡せる）が固定の種類ごとの `UInstancedStaticMeshComponent`（銀 = 手動 / 金 = ヒント）のインスタンスを置き直す。ドローコールは**種類ごとに 1 つ = 最大 2 つ**で、その種類の固定が無ければインスタンス 0 個 ＝ 描かれない。既定のメッシュはエンジンの `/Engine/BasicShapes/Sphere`（**本物の南京錠のメッシュ / アイコンは人が後で入れる**）。差し替え口は下の「固定の鍵アイコン」節 | 人と AI |
 | 軌道カメラ（`src/render/camera.ts`） | 注視点まわりの軌道カメラを C++ で。U2 で `ACubelithOrbitPawn`（`USpringArmComponent` + `UCameraComponent`）として実装し、`ACubelithGameMode` が開始時にパズルへ合わせる | AI |
 | 入力（`src/input/`） | ライントレースでピースを選ぶ。純粋関数（`axisMapping` / `twoFingerGesture` など）はテストごと C++ へ移す。U2 のカメラ操作は、`InputMappingContext` / `InputAction` が `.uasset`（0 章）なので Enhanced Input を使わず、Tick で `APlayerController` から入力状態をポーリングして読む。人がアセットを作る段になれば Enhanced Input へ移せる。U3 で `ACubelithPlayerController` として実装（`PlayerTick` でのポーリング入力・押した瞬間のライントレースでのピックと選択・ドラッグでのグリッド移動・2 本指の 90 度回転）。`src/input` の純粋関数は `CubelithPickSamples` / `CubelithAxisMapping` / `CubelithTwoFingerGesture` / `CubelithFreeRotation` / `CubelithRotateInput`（`Source/CUBELITH/Public`）へ移した。回転中の 90 度に縛らない見せ方は `ACubelithPuzzleActor::SetFreeRotation`。**マウスの回転は右ボタンのドラッグ**（離した時点で最寄りの向きへ確定させる）で、これは HUD の回転モードのトグルと回転ギズモ（U4）までの仮の手段。U4 で手を離したときのマグネット・スナップ（`HandlePointerReleased` → `Cubelith::FSnapControl` / `Cubelith::FSnapMotion`）を足した（下の「スナップ」節） | AI（感度の調整は人） |
 | スナップの効果音（RULES.md 3.5） | MetaSounds（音そのものは人が作る）。鳴らす口は AI 側にあり、`ACubelithGameMode::SnapSound`（`UPROPERTY(EditAnywhere, Category = "Cubelith|Audio")` の `TObjectPtr<USoundBase>`）に割り当てると `ACubelithGameMode::PlaySnapSound` が `UGameplayStatics::PlaySound2D` で鳴らす。**割り当てが無ければ鳴らない**（警告も出さない）。差し替え方は下の「スナップ」節 | 人と AI |
@@ -70,6 +70,40 @@ RULES.md 3.5（手を離したときのマグネット・スナップ）と 5.1�
 
 Automation Test は `CUBELITH.Render.Snap.*`（`FSnapControl`）と `CUBELITH.Render.SnapMotion.*`（`FSnapMotion`）。
 どちらも `UWorld` を作らずに純粋な状態機械として確かめる（時刻は呼び出し側から渡す形にしてあるので、実時間を待たない）。
+
+### 固定の鍵アイコン
+
+RULES.md 3.3（固定・やり直し）・3.7（ヒント）・6 章（固定の表示）の実装。本体は U1 で `CUBELITHCore` に移植済みで、ここはその「いつ呼ぶか」と見せ方。移植元は `WebMock/src/main.ts` の `onToggleLock` / `onHint` / `onReset` と `WebMock/src/render/lockIcons.ts`。
+
+**操作（`ACubelithGameMode`）** — HUD（後続タスク）とセーブからの復元はここを呼ぶ
+
+| 操作 | 実装 | 使う `CUBELITHCore` の関数 |
+|---|---|---|
+| 固定 / 固定解除 | `ToggleLock(PieceId)`。未固定なら手動の固定を付け、手動の固定中なら外す。**ヒントの固定は解除できない**（RULES.md 3.3）。固定する前に走っている自由回転を確定させ（`ACubelithPlayerController::CommitFreeRotation`）、固定した位置で止めるためスナップの補間を打ち切る（`CancelSnapMotionFor`） | `Cubelith::FGame::Lock` / `Unlock` / `LockKindOf` |
+| ヒント | `UseHint()`。対象を選び、**解答の位置と向きへ置いてから固定する**（`Place` は固定済みに効かないのでこの順が要る）。使えるかの問い合わせは `IsHintAvailable()`（HUD がボタンの有効 / 無効に使う） | `Cubelith::PickHintPiece`（`Hint.h`）・`FGame::Place` / `Lock` / `LockedIds` |
+| 散らし直し | `ScatterAgain()`。ヒントで固定したピースの現在の配置を `Keep` に入れ、**同じシード**（`GetSessionSeed`）で散らし直す。選択を外し（`ACubelithPlayerController::SetSelectedPiece(INDEX_NONE)`）、スナップの補間はすべて打ち切る（`CancelAllSnapMotion`） | `Cubelith::ScatterPlacements` の `FScatterOptions::Keep`（`Generate.h`）・`FGame::Reset`（手動の固定を解き、ヒントの固定は残す） |
+| 表示の揃え直し | `RefreshLockIcons()`。**固定 / 固定解除は配置を変えない ＝ `FGame` の `OnChange` が来ない**ので、固定の状態を変えた操作が自分で呼ぶ。全ピースに今の種類を流すので、一度に複数変わる経路（散らし直し・セーブからの復元）でもそのまま使える | `FGame::LockKindOf` |
+
+- 繋ぐときに要る小さな判断は `Source/CUBELITH/Public/CubelithLockOps.h` に純粋関数として切り出してある（`DecideLockToggle` / `IsHintAvailable` / `CollectHintKeptPlacements` / `LockIconColor`）。Automation Test は `CUBELITH.Render.LockOps.*`
+- 解釈: 散らし直しで `Keep` に入れるのは「ヒントの固定が付いているピースの**現在の**配置」（ヒントは解答位置へ置くので解答配置と同じ値になるが、Web 版の `main.ts` と同じく現在の配置から作る）
+- 固定中のピースは選べるが動かせない（`ACubelithPlayerController::IsPieceLocked` が移動・回転・スナップを弾く）。固定した瞬間にスナップ候補の発光が消え、解除した瞬間に計算し直されるのは、操作のあとに `ACubelithPlayerController::RefreshSnapHint` を呼んでいるため
+
+**仮の見せ方と人が差し替える口**（`ACubelithPuzzleActor`。すべて `UPROPERTY(EditAnywhere, Category = "Cubelith|Lock")`）
+
+| `UPROPERTY` | 型 | 既定 | 人が入れるもの |
+|---|---|---|---|
+| `LockIconMesh` | `TObjectPtr<UStaticMesh>` | `/Engine/BasicShapes/Sphere` | **本物の南京錠のメッシュ、または板ポリのアイコン**。空ならアイコンを出さない（警告を 1 回出す） |
+| `LockIconMaterial` | `TObjectPtr<UMaterialInterface>` | `/Engine/BasicShapes/BasicShapeMaterial` | 金属の質感のマテリアル（U5） |
+| `LockIconColorParameterName` | `FName` | `Color` | 差し替えたマテリアルの色パラメータ名 |
+| `LockIconSizeRatio` | `float` | `0.5`（半マス。`lockIcons.ts` の `ICON_SIZE` と同じ） | 見え方の調整 |
+| `ManualLockIconColor` | `FLinearColor` | 銀（`0.85, 0.88, 0.94`） | 手動の固定の色 |
+| `HintLockIconColor` | `FLinearColor` | 金（`1.0, 0.78, 0.12`） | ヒントの固定の色 |
+
+- 人の手順: 既定の `ACubelithPuzzleActor` は `ACubelithGameMode` が C++ のクラスから湧かせているので、**このクラスの Blueprint 派生を作って上の値を入れ、`ACubelithGameMode` が湧かせるクラスをそれに差し替える**（`SnapSound` と同じ「人がエディタで割り当てられる場所」。`.uasset` は AI が作らない。0 章）。差し替えの口を足すのは人がアセットを用意した時点でよい
+- 解釈: アイコンはボクセルの**中心**に置き、ピースのボクセル（`VoxelFillRatio` = 既定 0.96 でわずかに縮めてある）より小さくして中に見えるようにする。大きさは `LockIconSizeRatio` で人が調整する
+- アイコンはライントレースに当たらせない（`ECollisionEnabled::NoCollision`）。当たると固定中のピースを押したときにアイコンがピース本体の手前で遮ってしまう
+- 表示だけのずれ（スナップの補間）が掛かっていれば同じだけずらすが、自由回転は見ない（固定中のピースは回せず、固定の直前に走っていた分は `ToggleLock` が確定させてから固定する）
+- **RULES.md 6 章の「そのピースの内部発光コアは消す」はまだ扱っていない**（内部発光コア自体が U5 で人が作るマテリアルなので、消す相手がまだ無い）
 
 ### セーブ
 

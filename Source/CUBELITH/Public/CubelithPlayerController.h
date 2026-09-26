@@ -104,6 +104,37 @@ public:
 	void ResetForNewSession();
 
 	/**
+	 * 走っている自由回転を最寄りの向きへ確定させる（掛かっていなければ何もしない）。
+	 *
+	 * 固定・ヒント・散らし直し（RULES.md 3.3 / 3.7）は、その前に表示上のねじれを片付けておく必要がある
+	 * （固定すると回せなくなり、ヒントと散らし直しはピースを別の場所へ動かすため）。
+	 * ACubelithGameMode がそれらの操作の入口で呼ぶ（main.ts の exitRotateMode に当たる）
+	 */
+	void CommitFreeRotation();
+
+	/**
+	 * そのピースに走っているスナップの補間を打ち切る（RULES.md 3.5 の見た目の追いつき）。
+	 * 固定した位置・ヒントで送った位置でそのまま止めるために、ACubelithGameMode が呼ぶ
+	 */
+	void CancelSnapMotionFor(int32 PieceId);
+
+	/**
+	 * 走っているスナップの補間をすべて打ち切り、表示だけのずれを戻す（散らし直し。RULES.md 3.3「やり直し」）。
+	 * ResetForNewSession と違い、戻す相手（ピースのアクタ）はそのまま残るのでずれの解除まで流す
+	 */
+	void CancelAllSnapMotion();
+
+	/**
+	 * スナップ候補（＝薄く光らせる対象。RULES.md 5.1）を計算し直す（snapControl.ts の refresh）。
+	 * 配置が変わったとき・選択が変わったとき・回転が確定したときに呼ぶ。毎フレームは回さない。
+	 * 固定中のピースは候補を出さない（TS の main.ts が lockKindOf を見て null を渡すのと同じ）。
+	 *
+	 * 固定を付け外しすると候補の有無が変わるが、固定は配置を変えないので Cubelith::FGame の
+	 * OnChange が来ない ＝ ACubelithGameMode が固定の操作のあとに明示的に呼ぶ
+	 */
+	void RefreshSnapHint();
+
+	/**
 	 * タッチの近接ピックの許容半径（CSS ピクセル相当。pieceInput.ts の TOUCH_PICK_RADIUS_PX）。
 	 * 指の接触面は広く狙いも粗いのでマウスより広く取る
 	 */
@@ -185,13 +216,6 @@ private:
 	 * Cubelith::FSnapMotion で追いつかせ、効果音を鳴らす。固定中のピースは吸着させない（RULES.md 3.3）
 	 */
 	void ApplySnapOnRelease(int32 PieceId);
-
-	/**
-	 * スナップ候補（＝薄く光らせる対象）を計算し直す（snapControl.ts の refresh）。
-	 * 配置が変わったとき・選択が変わったとき・回転が確定したときに呼ぶ。毎フレームは回さない。
-	 * 固定中のピースは候補を出さない（TS の main.ts が lockKindOf を見て null を渡すのと同じ）
-	 */
-	void RefreshSnapHint();
 
 	/** 配置が変わったときに ACubelithGameMode から呼ばれる（OnPlacementsChanged に乗せる口） */
 	void HandlePlacementsChanged(TArrayView<const Cubelith::FPlacement> Placements);

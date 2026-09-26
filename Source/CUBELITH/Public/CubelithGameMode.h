@@ -16,6 +16,7 @@
 
 #include "CubelithGameMode.generated.h"
 
+class ACubelithPlayerController;
 class ACubelithPuzzleActor;
 class UCubelithScreenWidget;
 class USoundBase;
@@ -126,6 +127,51 @@ public:
 	/** 走っているセッションを畳む（画面は切り替えない）。セッションが無ければ何もしない */
 	void EndSession();
 
+	// --- 盤面の操作（HUD は後続タスクで、ここを呼ぶ）---
+
+	/**
+	 * ピースの固定を切り替える（RULES.md 3.3「固定」。Web 版 main.ts の onToggleLock）。
+	 *
+	 * 未固定なら手動の固定（`Cubelith::ELockKind::Manual`）を付け、手動の固定中なら外す。
+	 * **ヒントの固定（`ELockKind::Hint`）は解除できない**ので、そのピースでは何もしない。
+	 * 固定するときは走っている自由回転を先に確定させ、固定した位置で止めるためにスナップの補間を打ち切る。
+	 * セッションが無い / 未知のピース id なら何もしない
+	 */
+	void ToggleLock(int32 PieceId);
+
+	/**
+	 * ヒントを使う（RULES.md 3.7。Web 版 main.ts の onHint）。
+	 *
+	 * `Cubelith::PickHintPiece` が選んだピースを解答の位置と向きへ置いてから、解除できない
+	 * ヒントの固定を付ける（**置いてから固定する**。固定済みには `Place` が効かない）。
+	 * 使えるヒントが無いとき（未固定が 1 個以下）は何もしない。選択は解除しない
+	 */
+	void UseHint();
+
+	/**
+	 * ヒントが使えるか（RULES.md 3.7）。HUD がボタンの有効 / 無効に使う。
+	 * セッションが無ければ false
+	 */
+	bool IsHintAvailable() const;
+
+	/**
+	 * 同じシードで散らし直す（RULES.md 3.3「やり直し」。Web 版 main.ts の onReset）。
+	 *
+	 * ヒントで固定したピースは現在の位置に残し、それ以外を散らし直す。手動の固定は解け
+	 * （`Cubelith::FGame::Reset` の振る舞い）、ピースの選択も外れ、走っているスナップの補間は
+	 * すべて打ち切る。難易度もシードも変えないので、ヒントの固定が無ければ最初の散らしと同じ配置に戻る
+	 */
+	void ScatterAgain();
+
+	/**
+	 * 固定の表示（鍵アイコン。RULES.md 6 章）を、今のゲーム状態のとおりに揃え直す。
+	 *
+	 * 固定 / 固定解除は配置を変えない ＝ `Cubelith::FGame` の `OnChange` が来ないので、
+	 * 固定の状態を変えた操作が自分で呼ぶ。全ピースを見て銀 / 金 / 無しを流し込む
+	 * （差分を追わないので、セーブからの復元のように一度に複数変わる経路でもそのまま使える）
+	 */
+	void RefreshLockIcons();
+
 	/** セッションが走っているか（= 遊べる盤面があるか） */
 	bool HasSession() const { return Game.IsValid(); }
 
@@ -140,7 +186,7 @@ public:
 
 	/**
 	 * 今のセッションの生成結果（RULES.md 3.2 の N / M / シード / ピース / 解答）。
-	 * 後続タスクのヒント（Solution が要る）・散らし直し（同じシードが要る）・セーブ（難易度とシードが要る）が読む。
+	 * ヒント（Solution が要る）・散らし直し（同じシードが要る）と、後続タスクのセーブ（難易度とシードが要る）が読む。
 	 * HasSession が false のときの中身は見ない（ピースが空）
 	 */
 	const Cubelith::FGeneratedPuzzle& GetSessionPuzzle() const { return SessionPuzzle; }
@@ -282,6 +328,9 @@ private:
 	 * クリアしている間はずっと見えるよう画面に仮の表示を出す。本実装の UI は後続タスク、演出は U5
 	 */
 	void UpdateSolvedDisplay(bool bSolved);
+
+	/** 操作しているプレイヤーのコントローラ（ACubelithPlayerController でなければ nullptr） */
+	ACubelithPlayerController* GetCubelithPlayerController() const;
 
 	/** クリアの仮表示を出しているか（= 直近に受け取ったクリア判定の結果） */
 	bool bSolvedShown = false;
