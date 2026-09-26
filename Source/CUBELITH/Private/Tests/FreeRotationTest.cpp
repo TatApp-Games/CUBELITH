@@ -14,7 +14,9 @@
 
 namespace CubelithRenderTests
 {
-	namespace
+	// FreeRotationTest.cpp 専用のヘルパ。unity ビルドでは他のテストファイルと同じ翻訳単位に入るので、
+	// 名前をこの中に閉じる（素の無名 namespace だと CubelithPlayerController.cpp の同名の関数と衝突する）
+	namespace FreeRotationTestDetail
 	{
 		/** 向きの比較は id なので厳密。行列の要素の比較だけ許容差を付ける */
 		constexpr double FreeRotationTolerance = 1.0e-9;
@@ -66,7 +68,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCubelithFreeRotationRowMajorTest, "CUBELITH.Re
 
 bool FCubelithFreeRotationRowMajorTest::RunTest(const FString& Parameters)
 {
-	using namespace CubelithRenderTests;
+	using namespace CubelithRenderTests::FreeRotationTestDetail;
 
 	const TArray<double> Identity = Cubelith::WorldRotationToLogicRowMajor(FMatrix::Identity);
 	const double ExpectedIdentity[9] = { 1, 0, 0, 0, 1, 0, 0, 0, 1 };
@@ -111,7 +113,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCubelithFreeRotationIdentityTest, "CUBELITH.Re
 
 bool FCubelithFreeRotationIdentityTest::RunTest(const FString& Parameters)
 {
-	using namespace CubelithRenderTests;
+	using namespace CubelithRenderTests::FreeRotationTestDetail;
 
 	for (int32 Orientation = 0; Orientation < Cubelith::OrientationCount; ++Orientation)
 	{
@@ -132,7 +134,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCubelithFreeRotationComposeTest, "CUBELITH.Ren
 
 bool FCubelithFreeRotationComposeTest::RunTest(const FString& Parameters)
 {
-	using namespace CubelithRenderTests;
+	using namespace CubelithRenderTests::FreeRotationTestDetail;
 
 	for (int32 B = 0; B < Cubelith::OrientationCount; ++B)
 	{
@@ -168,7 +170,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCubelithFreeRotationAxisQuaternionTest, "CUBEL
 
 bool FCubelithFreeRotationAxisQuaternionTest::RunTest(const FString& Parameters)
 {
-	using namespace CubelithRenderTests;
+	using namespace CubelithRenderTests::FreeRotationTestDetail;
 
 	for (const Cubelith::EAxis Axis : LogicAxes)
 	{
@@ -196,7 +198,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCubelithFreeRotationAxisStepTest, "CUBELITH.Re
 
 bool FCubelithFreeRotationAxisStepTest::RunTest(const FString& Parameters)
 {
-	using namespace CubelithRenderTests;
+	using namespace CubelithRenderTests::FreeRotationTestDetail;
 
 	for (int32 Orientation = 0; Orientation < Cubelith::OrientationCount; ++Orientation)
 	{
@@ -226,7 +228,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCubelithFreeRotationSnapBoundaryTest, "CUBELIT
 
 bool FCubelithFreeRotationSnapBoundaryTest::RunTest(const FString& Parameters)
 {
-	using namespace CubelithRenderTests;
+	using namespace CubelithRenderTests::FreeRotationTestDetail;
 
 	for (int32 Orientation = 0; Orientation < Cubelith::OrientationCount; ++Orientation)
 	{
@@ -267,7 +269,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCubelithFreeRotationJitterTest, "CUBELITH.Rend
 
 bool FCubelithFreeRotationJitterTest::RunTest(const FString& Parameters)
 {
-	using namespace CubelithRenderTests;
+	using namespace CubelithRenderTests::FreeRotationTestDetail;
 
 	// 軸に揃っていない向きの、数度の揺れ
 	const FVector JitterAxes[3] = {
@@ -308,7 +310,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCubelithFreeRotationTrackballTest, "CUBELITH.R
 
 bool FCubelithFreeRotationTrackballTest::RunTest(const FString& Parameters)
 {
-	using namespace CubelithRenderTests;
+	using namespace CubelithRenderTests::FreeRotationTestDetail;
 
 	// 右へ 90 度・上へ 90 度ぶん回したときの合成（掛ける順は表示と同じく左から）
 	const FQuat Yaw = QuatAroundLogicAxis(Cubelith::EAxis::Y, 88.0);

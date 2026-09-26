@@ -39,11 +39,45 @@
 | スナップの効果音（RULES.md 3.5） | MetaSounds | 人 |
 | クリア演出（RULES.md 5.2） | 発光は Material Parameter Collection、パーティクルは Niagara（原典 5.2）、カメラの旋回は C++ | 人と AI |
 | UI（RULES.md 6 章） | UMG。C++ の基底クラス（`BindWidget`）と、人が作るレイアウト。縦持ちの画面に合わせる | 人と AI |
-| セーブ（10 章） | `USaveGame` を `UGameplayStatics::SaveGameToSlot` で保存する。盤面が変わるたびと、アプリがバックグラウンドに入るとき（`FCoreDelegates` のアプリのライフサイクルの通知）に書く。モバイルでは裏に回ったアプリが OS に終了させられることがあるため | AI |
+| セーブ（RULES.md 3.8） | `USaveGame` を `UGameplayStatics::SaveGameToSlot` で保存する。保存先・保存する形・壊れたデータの扱いは下の「セーブ」節。盤面が変わるたびと、アプリがバックグラウンドに入るとき（`FCoreDelegates` のアプリのライフサイクルの通知）に書く。モバイルでは裏に回ったアプリが OS に終了させられることがあるため | AI |
 | ライティング（原典 4.1） | ディレクショナルライト 1 灯 + HDRI | 人 |
 
 - 目標フレームレート: 実機で 30 fps 以上（N=7 / M=27 でも）。対象端末は未定
 - **早めに実機で確かめること**（U1 と並行して人が進める）: すりガラスの見た目と負荷、半透明の ISM でインスタンス同士の前後関係が崩れないか（インスタンス単位では並び替えられない）、Fake 屈折がモバイルで成り立つか
+
+### セーブ
+
+RULES.md 3.8 の「覚えている 3 つ」を `USaveGame` で保存する。実装は `Source/CUBELITH/Public/CubelithSave.h`（保存する形と、検証・更新の純粋関数）と `CubelithSaveGame.h`（器とスロットへの読み書き）。移植元は Web 版の `WebMock/src/ui/save.ts` で、JSON ではなく `USaveGame` のシリアライズを使うので、TS の `parseSaveData` / `serializeSaveData` は「読み込んだ値が使える形か検証する」関数（`IsValidSavedDifficulty` / `IsValidSavedProgress` / `SanitizeSaveData`）として移した。
+
+**保存先**
+
+- スロット名 `CubelithSave`・ユーザー index `0`（`Cubelith::SaveSlotName` / `SaveUserIndex`）。実ファイルは `Saved/SaveGames/CubelithSave.sav`
+- 版番号 `Cubelith::SaveVersion`（現在 1）を `UCubelithSaveGame::Version` に持つ（Web 版の `localStorage` のキー `cubelith.save.v1` に当たる）。保存する形を変えたら 1 つ上げる
+
+**保存する形**（`FCubelithSaveData`。すべて `USTRUCT` / `UENUM` で、`UCubelithSaveGame` はこれを 1 つ持つ）
+
+| 覚えるもの | 形 |
+|---|---|
+| 最後に選んだ難易度 | `FCubelithSavedDifficulty`（`SpaceSize` / `PieceCount` / `bAllowRotation`） |
+| 途中の盤面 | 有無のフラグ `bHasProgress` + `FCubelithSavedProgress`（難易度・`Seed`・`Placements`・`Locks`・`Remaining`） |
+| クリア回数 | `FCubelithSavedClears`（`Total` と `ByDifficulty`。キーは `Cubelith::DifficultyKey` の `"3-4-0"` 形式 = `N-M-回転`） |
+
+- ピースの形は保存しない。難易度と `Seed` から `GeneratePuzzle` で再現できる（RULES.md 3.6）ので保存量が小さく、生成規則が変わったときにはピース数の食い違いとして検出できる
+- `Seed` は `int64` で持つ（`uint32` は `UPROPERTY` にできないため。`ACubelithGameMode::Seed` と同じ扱い）。負の値は「保存されていない」
+- `Locks` は固定中のピースだけを id 昇順で持つ。種類は `ECubelithSavedLockKind`（`Manual` / `Hint`）で、`Cubelith::ELockKind`（`CUBELITHCore` は `UObject` を持てない。7.1）との相互変換は `ToCoreLockKind` / `ToSavedLockKind`
+- `Remaining` はタイトルに出す残りピース数（RULES.md 6 章）。盤面を再生成せずに出せるよう保存する。**数え方は `CubelithProgress.h` の「解釈:」**（面接触の塊 → 最大の塊 → 外接ボックスが N×N×N に収まれば確定）。移植元は `WebMock/src/ui/progress.ts`
+- 選択中のピースとカメラは保存しない（RULES.md 3.8。再開時は「選択なし・カメラは初期位置」）
+
+**壊れたデータの扱い**（`Cubelith::LoadSaveData` → `SanitizeSaveData`）
+
+読めないものは例外を出さず、既定（RULES.md 3.1 の N=3 / M=4 / 回転なし、途中の盤面なし、クリア回数 0）へ落とす。
+
+- スロットが無い / 読めない / 別のクラス / 版番号が `SaveVersion` と違う → まるごと既定値
+- 最後に選んだ難易度が範囲外（N が 3..7 の外、M が 2..`MaxPieces(N)` の外）→ まるごと既定値
+- 途中の盤面が使えない形 → **盤面だけ捨てて難易度とクリア回数は生かす**（Web 版の `parseSaveData` と同じ）。弾くのは、難易度が範囲外・`Seed` が 0..4294967295 の外・配置が空・配置数が難易度の M と食い違う・向きが 0..23 の外・`PieceId` が重複・固定の id が配置に無い / 重複・`Remaining` が 0..配置数の外。復元して初期配置に使う前にはさらに `ProgressFitsPieces` で「生成したピースの id とちょうど 1 対 1 か」を見る
+- クリア回数 → 負の合計は 0 に、負の回数のキーは落とす（回数は遊びの進行に影響しないので、全体を捨てるより残すほうが損が小さい）
+
+**まだ繋いでいないこと**: 保存のタイミング（盤面が変わるたび・バックグラウンドに入るとき）と「続きから」・クリア回数の表示は後続タスクで `ACubelithGameMode` から繋ぐ。ここまでは形と純粋関数・スロットへの読み書きの器だけ。Automation Test（`CUBELITH.Render.Progress.*` / `CUBELITH.Render.Save.*`）は実際のスロットへ読み書きしない（エディタの `Saved/` を汚さないため）ので、検証・更新の純粋関数を直接呼んで確かめている
 
 ## 7. 技術構成
 
