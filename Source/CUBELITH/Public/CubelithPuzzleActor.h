@@ -14,7 +14,9 @@
 #include "CubelithPuzzleActor.generated.h"
 
 class UInstancedStaticMeshComponent;
+class UMaterialInstanceDynamic;
 class UMaterialInterface;
+class UPrimitiveComponent;
 class USceneComponent;
 class UStaticMesh;
 
@@ -52,6 +54,21 @@ public:
 	 * まだ何も置いていなければ 0。
 	 */
 	double GetBoundingRadiusCm() const { return BoundingRadiusCm; }
+
+	/**
+	 * ライントレースのヒットしたコンポーネントからピース id を引く。ピースのものでなければ INDEX_NONE。
+	 * ACubelithPlayerController のピックが使う（RULES.md 3.3「ピース選択」）
+	 */
+	int32 FindPieceIdByComponent(const UPrimitiveComponent* Component) const;
+
+	/**
+	 * 選択中のピースを置き換える（未選択は INDEX_NONE）。前に選んでいたピースは元の色へ戻る。
+	 * 仮の見せ方として、選んだピースの色を白へ寄せて明るくする（縁取りや発光での本実装は U5）
+	 */
+	void SetSelectedPiece(int32 PieceId);
+
+	/** 選択中のピース id（未選択は INDEX_NONE） */
+	int32 GetSelectedPiece() const { return SelectedPieceId; }
 
 	/** ボクセル 1 個のメッシュ。既定はエンジンの立方体 /Engine/BasicShapes/Cube（1 辺 100 cm） */
 	UPROPERTY(EditAnywhere, Category = "Cubelith|Render")
@@ -91,6 +108,17 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Cubelith|Render", meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float ColorValue = 0.58f;
 
+	/**
+	 * 選択中のピースの色を白へ寄せる量（0 で元の色のまま、1 で真っ白）。
+	 * 仮の強調なので、人がエディタで見え方を調整できるようにしてある（Docs/SPEC_UE.md 0 章）
+	 */
+	UPROPERTY(EditAnywhere, Category = "Cubelith|Render", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float SelectionWhitenAmount = 0.5f;
+
+	/** 選択中のピースの明るさの倍率（1 で元のまま）。白へ寄せたうえでさらに持ち上げる */
+	UPROPERTY(EditAnywhere, Category = "Cubelith|Render", meta = (ClampMin = "0.0"))
+	float SelectionBrightnessScale = 1.6f;
+
 private:
 	/** ピース index からピース色を作る（pieces.ts の pieceColor） */
 	FLinearColor MakePieceColor(int32 Index, int32 Count) const;
@@ -100,6 +128,9 @@ private:
 
 	/** ピース id からピースを引く。未知の id なら nullptr */
 	const Cubelith::FPiece* FindPiece(int32 PieceId) const;
+
+	/** ピース id の動的マテリアルへ色を流す。bSelected なら強調した色にする */
+	void ApplyPieceColor(int32 PieceId, bool bSelected);
 
 	/** ルート。このアクタの位置が解答空間の中心になる（= 軌道カメラの注視点） */
 	UPROPERTY(VisibleAnywhere, Category = "Cubelith|Render")
@@ -114,6 +145,16 @@ private:
 
 	/** ピース id → PieceList の添字 */
 	TMap<int32, int32> PieceIndexById;
+
+	/** ピース id → そのピースの動的マテリアル。選択の強調で色を差し替える（VoxelMaterial が空なら入らない） */
+	UPROPERTY()
+	TMap<int32, TObjectPtr<UMaterialInstanceDynamic>> PieceMaterials;
+
+	/** ピース id → 選択していないときの色。強調を解くときにここへ戻す */
+	TMap<int32, FLinearColor> PieceBaseColors;
+
+	/** 選択中のピース id（未選択は INDEX_NONE）。Build で作り直したら未選択に戻る */
+	int32 SelectedPieceId = INDEX_NONE;
 
 	/** 解答空間のサイズ N。中心合わせのオフセットに使う */
 	int32 SpaceSize = 0;

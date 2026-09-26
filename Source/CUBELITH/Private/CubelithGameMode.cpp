@@ -11,6 +11,7 @@
 
 #include "CubelithLog.h"
 #include "CubelithOrbitPawn.h"
+#include "CubelithPlayerController.h"
 #include "CubelithPuzzleActor.h"
 #include "CubelithSeed.h"
 #include "Generate.h"
@@ -44,6 +45,10 @@ ACubelithGameMode::ACubelithGameMode()
 	// マップ /Game/Maps/Main に PlayerStart が無ければ Pawn はワールド原点に湧く。軌道カメラの注視点は
 	// 立方体の中心（= パズルのアクタを置くワールド原点）なのでそれでよく、マップには手を入れない
 	DefaultPawnClass = ACubelithOrbitPawn::StaticClass();
+
+	// クリック / タップでピースを選ぶコントローラ（RULES.md 3.3）。Blueprint の .uasset を作らないので
+	// ここで C++ のクラスを指す（DefaultPawnClass と同じ書き方。Docs/SPEC_UE.md 0 章）
+	PlayerControllerClass = ACubelithPlayerController::StaticClass();
 }
 
 void ACubelithGameMode::InitGame(const FString& MapName, const FString& Options, FString& ErrorMessage)

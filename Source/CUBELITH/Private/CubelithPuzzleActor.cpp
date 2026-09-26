@@ -89,6 +89,10 @@ void ACubelithPuzzleActor::Build(TArrayView<const Cubelith::FPiece> Pieces, int3
 	PieceMeshes.Reset();
 	PieceIndexById.Reset();
 	PieceList.Reset();
+	PieceMaterials.Reset();
+	PieceBaseColors.Reset();
+	// 作り直したら選択は無くなる（選び直すのは操作する側。RULES.md 3.3 の外からの解除に当たる）
+	SelectedPieceId = INDEX_NONE;
 	BoundingRadiusCm = 0.0;
 
 	SpaceSize = N;
@@ -118,6 +122,8 @@ void ACubelithPuzzleActor::Build(TArrayView<const Cubelith::FPiece> Pieces, int3
 	PieceList.Reserve(Pieces.Num());
 	PieceIndexById.Reserve(Pieces.Num());
 	PieceMeshes.Reserve(Pieces.Num());
+	PieceMaterials.Reserve(Pieces.Num());
+	PieceBaseColors.Reserve(Pieces.Num());
 
 	for (int32 Index = 0; Index < Pieces.Num(); ++Index)
 	{
@@ -141,7 +147,16 @@ void ACubelithPuzzleActor::Build(TArrayView<const Cubelith::FPiece> Pieces, int3
 		Mesh->SetupAttachment(PuzzleRoot);
 		Mesh->SetMobility(EComponentMobility::Movable);
 		Mesh->SetStaticMesh(VoxelMesh);
-		// コリジョンの設定は既定のまま触らない（U3 のライントレースでピースを選ぶのに使う）
+
+		// ピースを押して選べるよう、ライントレース（ECC_Visibility）に当たるようにする。
+		// 物理は使わない（RULES.md 3.4）ので当たり判定はクエリ専用に留め、重なりの通知も要らない。
+		// 撃つのは簡易コリジョン（立方体の箱）なので bTraceComplex は使わない側のまま
+		Mesh->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+		Mesh->SetCollisionObjectType(ECC_WorldDynamic);
+		Mesh->SetCollisionResponseToAllChannels(ECR_Ignore);
+		Mesh->SetCollisionResponseToChannel(ECC_Visibility, ECR_Block);
+		Mesh->SetGenerateOverlapEvents(false);
+		Mesh->SetCanEverAffectNavigation(false);
 
 		if (VoxelMaterial != nullptr)
 		{
@@ -150,8 +165,12 @@ void ACubelithPuzzleActor::Build(TArrayView<const Cubelith::FPiece> Pieces, int3
 			UMaterialInstanceDynamic* PieceMaterial = UMaterialInstanceDynamic::Create(VoxelMaterial, this);
 			if (PieceMaterial != nullptr)
 			{
-				PieceMaterial->SetVectorParameterValue(ColorParameterName, MakePieceColor(Index, Pieces.Num()));
+				// 選択の強調を解くときに戻せるよう、素の色とマテリアルを覚えておく
+				const FLinearColor BaseColor = MakePieceColor(Index, Pieces.Num());
+				PieceMaterial->SetVectorParameterValue(ColorParameterName, BaseColor);
 				Mesh->SetMaterial(0, PieceMaterial);
+				PieceMaterials.Add(Piece.Id, PieceMaterial);
+				PieceBaseColors.Add(Piece.Id, BaseColor);
 			}
 		}
 
@@ -263,4 +282,68 @@ const Cubelith::FPiece* ACubelithPuzzleActor::FindPiece(int32 PieceId) const
 {
 	const int32* Index = PieceIndexById.Find(PieceId);
 	return (Index != nullptr) ? &PieceList[*Index] : nullptr;
+}
+
+int32 ACubelithPuzzleActor::FindPieceIdByComponent(const UPrimitiveComponent* Component) const
+{
+	if (Component == nullptr)
+	{
+		return INDEX_NONE;
+	}
+
+	// ピースは多くても 27 個（RULES.md 3.1 の M の上限）なので、逆引きの表は持たずに総当たりで足りる
+	for (const TPair<int32, TObjectPtr<UInstancedStaticMeshComponent>>& Pair : PieceMeshes)
+	{
+		if (Pair.Value.Get() == Component)
+		{
+			return Pair.Key;
+		}
+	}
+
+	return INDEX_NONE;
+}
+
+void ACubelithPuzzleActor::SetSelectedPiece(int32 PieceId)
+{
+	if (SelectedPieceId == PieceId)
+	{
+		return;
+	}
+
+	const int32 PreviousPieceId = SelectedPieceId;
+	SelectedPieceId = PieceId;
+
+	// 先に前の選択を元の色へ戻してから新しい選択を強調する（同じピースを跨ぐことは無いが順は明確にしておく）
+	if (PreviousPieceId != INDEX_NONE)
+	{
+		ApplyPieceColor(PreviousPieceId, /*bSelected=*/false);
+	}
+	if (SelectedPieceId != INDEX_NONE)
+	{
+		ApplyPieceColor(SelectedPieceId, /*bSelected=*/true);
+	}
+}
+
+void ACubelithPuzzleActor::ApplyPieceColor(int32 PieceId, bool bSelected)
+{
+	const FLinearColor* BaseColor = PieceBaseColors.Find(PieceId);
+	TObjectPtr<UMaterialInstanceDynamic>* Found = PieceMaterials.Find(PieceId);
+	UMaterialInstanceDynamic* PieceMaterial = (Found != nullptr) ? Found->Get() : nullptr;
+	if (BaseColor == nullptr || PieceMaterial == nullptr)
+	{
+		// VoxelMaterial が空（Build で警告済み）か、未知の id。色を変える手立てが無いので何もしない
+		return;
+	}
+
+	FLinearColor Color = *BaseColor;
+	if (bSelected)
+	{
+		// 仮の強調（U5 で縁取り・発光に置き換える）: 白へ寄せてから明るくする。
+		// 乗算はアルファにも掛かるので、元のアルファに戻してから流す
+		Color = FMath::Lerp(Color, FLinearColor::White, FMath::Clamp(SelectionWhitenAmount, 0.0f, 1.0f));
+		Color *= FMath::Max(0.0f, SelectionBrightnessScale);
+		Color.A = BaseColor->A;
+	}
+
+	PieceMaterial->SetVectorParameterValue(ColorParameterName, Color);
 }
