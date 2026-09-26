@@ -8,9 +8,8 @@ public class CUBELITH : ModuleRules
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
 	
-		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "EnhancedInput" });
-
-		PrivateDependencyModuleNames.AddRange(new string[] { "CUBELITHCore" });
+		// CUBELITHCore は Public に置く（Public/ のヘッダが FVec3 などを露出するため。Docs/SPEC_UE.md 7.1）
+		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "EnhancedInput", "CUBELITHCore" });
 
 		// Uncomment if you are using Slate UI
 		// PrivateDependencyModuleNames.AddRange(new string[] { "Slate", "SlateCore" });
