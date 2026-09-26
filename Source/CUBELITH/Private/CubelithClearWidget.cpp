@@ -14,8 +14,8 @@ namespace
 {
 	/** 仮の画面の文字の大きさ（端末非依存。人が UMG で作り直す前提なので細かく詰めない） */
 	constexpr int32 BannerFontSize = 32;
-	constexpr int32 BodyFontSize = 16;
-	constexpr int32 SeedFontSize = 12;
+	constexpr int32 ClearBodyFontSize = 16;
+	constexpr int32 ClearSeedFontSize = 12;
 
 	/** 「もう一度」「難易度を変える」の横幅（長いラベルでも折り返さない程度に取る） */
 	constexpr float ActionButtonWidthPx = 160.0f;
@@ -50,7 +50,7 @@ void UCubelithClearWidget::BuildFallbackLayout()
 
 	BannerText = ConstructText(Stack, FText::FromString(TEXT("CLEAR")), BannerFontSize);
 	// 中身は Refresh が入れる（人のレイアウトでも同じ道を通す）ので、ここでは空のまま置く
-	SummaryText = ConstructText(Stack, FText::GetEmpty(), BodyFontSize);
+	SummaryText = ConstructText(Stack, FText::GetEmpty(), ClearBodyFontSize);
 
 	UHorizontalBox* const ActionRow = ConstructRow(Stack);
 	// 押したときの処理は BindBehavior でまとめて結ぶ（人の UMG のボタンと同じ道を通す）ので、ここでは付けない
@@ -59,7 +59,7 @@ void UCubelithClearWidget::BuildFallbackLayout()
 	BackToTitleButton = ConstructButton(ActionRow,
 		FText::FromString(TEXT("難易度を変える")), TFunction<void()>(), ActionButtonWidthPx);
 
-	SeedText = ConstructText(Stack, FText::GetEmpty(), SeedFontSize);
+	SeedText = ConstructText(Stack, FText::GetEmpty(), ClearSeedFontSize);
 }
 
 void UCubelithClearWidget::BindBehavior()

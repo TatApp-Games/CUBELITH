@@ -10,5 +10,7 @@ param(
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'Common.ps1')
 
-& $BuildBat CUBELITHEditor Win64 $Configuration "-Project=$UProject" -WaitMutex -NoHotReloadFromIDE
+# -DisableAdaptiveUnity: 作業中のファイルを unity build から外す動き（adaptive unity）を止め、常にまとめてコンパイルする。
+# 外したままだと、別の .cpp の無名名前空間の同じ名前がぶつかる誤りを verify が見逃し、コミット後のビルドで初めて落ちる
+& $BuildBat CUBELITHEditor Win64 $Configuration "-Project=$UProject" -WaitMutex -NoHotReloadFromIDE -DisableAdaptiveUnity
 exit $LASTEXITCODE
