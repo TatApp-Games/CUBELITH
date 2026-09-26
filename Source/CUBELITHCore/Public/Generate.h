@@ -1,11 +1,11 @@
-// 領域拡張（Region Growing）による分割（RULES.md 3.2）。移植元は WebMock/src/core/generate.ts
+// 領域拡張（Region Growing）による分割と、プレイ開始時の初期散らし（RULES.md 3.2）。移植元は WebMock/src/core/generate.ts
 // 同じ条件とシードなら Web 版と UE 版で同じパズルを出す（RULES.md 3.6）ので、乱数の消費の順を TS から変えない
 // 命名は 001〜004 が決めた約束に揃える（namespace Cubelith・型は F 接頭辞・関数は WebMock と同じ名前を PascalCase に）
-// 散らし（scatterPlacements）はこのファイルにはまだ無い（006 で足す）
 
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Containers/ArrayView.h"
 #include "Grid.h"
 #include "Piece.h"
 
@@ -62,4 +62,39 @@ namespace Cubelith
 	 * 解答配置だけを取り出す薄い入口とする（両方要るときは GeneratePuzzle を 1 回呼べばよい）。
 	 */
 	CUBELITHCORE_API TArray<FPlacement> SolutionPlacements(int32 N, int32 M, uint32 Seed);
+
+	/**
+	 * 散らしのオプション（TS の ScatterOptions）。
+	 * 既定は「向きはランダム・固定ピース無し」で、TS で options を省略した 3 引数の呼び出しと同じ意味になる。
+	 */
+	struct CUBELITHCORE_API FScatterOptions
+	{
+		/** 向きをランダムにするか。false なら全ピースを IdentityOrientation で置く（TS の allowRotation） */
+		bool bAllowRotation = true;
+
+		/**
+		 * 散らさずにそのまま残す配置（ヒントで固定したピース。TS の keep）。既定は空。
+		 *
+		 * 解釈: TS は options の省略と keep の省略を区別するが、buildKeepMap がどちらも空の表にするので
+		 * 結果は同じ。C++ では既定構築の FScatterOptions がその両方に当たる。
+		 */
+		TArray<FPlacement> Keep;
+	};
+
+	/**
+	 * プレイ開始時の初期散らし（RULES.md 3.2-5。TS の scatterPlacements）。
+	 * 各ピースにランダムな向き（24 通り）と、立方体の周囲 ±(N+2) 程度のランダムな位置を与える。
+	 * ピース同士は重ならない。同じ引数なら常に同じ配置になる。
+	 *
+	 * Options で「向きを恒等に固定する（難易度: 回転なし）」「指定した配置は散らさず残す（ヒントで
+	 * 固定したピース）」を指定できる。返り値は常に全ピース分で、並びは Pieces の並びに揃う。
+	 *
+	 * 解釈（TS のまま）: 散らした直後にクリア判定が真になると開始と同時にクリアしてしまうので、真なら引き直す。
+	 * ただし Keep があるときは固定の進み具合によっては避けようが無いので、上限まで引き直しても
+	 * 避けられなければ checkf にせず最後の配置を返す。
+	 *
+	 * N が 3..7 の外、Pieces が空、Keep に未知 / 重複したピース id があれば checkf（TS は RangeError / Error）。
+	 */
+	CUBELITHCORE_API TArray<FPlacement> ScatterPlacements(
+		TArrayView<const FPiece> Pieces, int32 N, uint32 Seed, const FScatterOptions& Options = FScatterOptions());
 }
