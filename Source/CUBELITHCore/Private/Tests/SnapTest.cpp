@@ -1,14 +1,13 @@
-// WebMock/tests/snap.test.ts の snapCandidate（手で組んだケース）の正常系の移植
+// WebMock/tests/snap.test.ts の snapCandidate（手で組んだケース・生成したパズル）の正常系の移植
 // SnapCandidate は Solve.h（solve.ts）の公開 API だが、テストは移植元と 1 対 1 にするためこのファイルに分けてある
 // 移植しないテスト: 「入力が壊れていれば例外を投げる」（checkf で停止するため）
-// 005 で足すテスト: snapCandidate（生成したパズル）の「1 マスずらしても総当たりと同じ答えになる」（generatePuzzle が要る）
-// 005 で足すテスト: snapCandidate（生成したパズル）の「立方体から遠く離れた配置では候補が出ない」（generatePuzzle が要る）
 
 #include "Misc/AutomationTest.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "Algo/Reverse.h"
+#include "Generate.h"
 #include "Grid.h"
 #include "Piece.h"
 #include "Solve.h"
@@ -246,6 +245,36 @@ namespace CubelithCoreTests
 		{
 			return TArray<Cubelith::FPiece>{ Unit(0), Unit(1) };
 		}
+
+		/** 生成したパズルで試す組み合わせ（TS の CASES） */
+		struct FGeneratedCase
+		{
+			int32 N = 0;
+			int32 M = 0;
+			uint32 Seed = 0;
+		};
+
+		const TArray<FGeneratedCase>& GeneratedCases()
+		{
+			static const TArray<FGeneratedCase> Cases{
+				{ 3, 2, 1 }, { 3, 4, 7 }, { 4, 5, 12345 }, { 5, 8, 99 }, { 7, 27, 2026 } };
+			return Cases;
+		}
+
+		/** 1 つの配置だけを平行移動した配列を返す（TS の solution.map(...)） */
+		TArray<Cubelith::FPlacement> TranslateOne(
+			TArrayView<const Cubelith::FPlacement> Placements, int32 PieceId, const Cubelith::FVec3& Step)
+		{
+			TArray<Cubelith::FPlacement> Result;
+			Result.Reserve(Placements.Num());
+			for (const Cubelith::FPlacement& Placement : Placements)
+			{
+				Result.Add(Placement.PieceId == PieceId
+					? Place(Placement.PieceId, Cubelith::AddVec3(Placement.Position, Step), Placement.Orientation)
+					: Placement);
+			}
+			return Result;
+		}
 	}
 }
 
@@ -477,6 +506,88 @@ bool FCubelithSnapPrefersNearerCandidateTest::RunTest(const FString& Parameters)
 		return false;
 	}
 	SnapTestDetail::CheckVec3(*this, TEXT("候補の位置"), Candidate.GetValue().Position, Cubelith::Vec3(0, 1, 0));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCubelithSnapGeneratedPuzzleMatchesBruteForceTest, "CUBELITH.Core.Snap.GeneratedPuzzleMatchesBruteForce",
+	EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::ProductFilter)
+
+bool FCubelithSnapGeneratedPuzzleMatchesBruteForceTest::RunTest(const FString& Parameters)
+{
+	using namespace CubelithCoreTests;
+
+	// 生成したパズルの解答配置から 1 ピースを 1 マスずらしても、総当たりの参照実装と同じ答えになる。
+	// 件数が多いので、食い違ったらそのケースを打ち切る（記録を増やさない）
+	for (const SnapTestDetail::FGeneratedCase& Case : SnapTestDetail::GeneratedCases())
+	{
+		const FString What = FString::Printf(TEXT("N=%d / M=%d / seed=%u"), Case.N, Case.M, Case.Seed);
+		const Cubelith::FGeneratedPuzzle Puzzle = Cubelith::GeneratePuzzle(Case.N, Case.M, Case.Seed);
+
+		bool bFailed = false;
+		for (const Cubelith::FVec3& Step : SnapTestDetail::Steps())
+		{
+			for (const Cubelith::FPlacement& Target : Puzzle.Solution)
+			{
+				const FString Where = FString::Printf(TEXT("%s: ピース %d を (%d,%d,%d) ずらしたとき"),
+					*What, Target.PieceId, Step.X, Step.Y, Step.Z);
+				const TArray<Cubelith::FPlacement> Placements =
+					SnapTestDetail::TranslateOne(Puzzle.Solution, Target.PieceId, Step);
+
+				const TOptional<Cubelith::FPlacement> Candidate =
+					Cubelith::SnapCandidate(Puzzle.Pieces, Placements, Target.PieceId, Case.N);
+
+				// 総当たりの参照実装と完全に一致する
+				if (!SnapTestDetail::CheckCandidateEquals(*this, Where, Candidate,
+					SnapTestDetail::BruteForceCandidate(Puzzle.Pieces, Placements, Target.PieceId, Case.N)))
+				{
+					bFailed = true;
+					break;
+				}
+				if (!Candidate.IsSet())
+				{
+					AddError(FString::Printf(TEXT("%s: 候補が見つからなかった"), *Where));
+					bFailed = true;
+					break;
+				}
+
+				// 他のピースが N×N×N を張っているなら、収まる位置は解答位置しか無い
+				const Cubelith::FBoundingBox Box = Cubelith::BoundingBox(
+					SnapTestDetail::OtherVoxels(Puzzle.Pieces, Placements, Target.PieceId));
+				if (Box.Size.X == Case.N && Box.Size.Y == Case.N && Box.Size.Z == Case.N)
+				{
+					if (!SnapTestDetail::CheckVec3(*this, FString::Printf(TEXT("%s の候補の位置"), *Where),
+						Candidate.GetValue().Position, Target.Position))
+					{
+						bFailed = true;
+						break;
+					}
+				}
+			}
+			if (bFailed)
+			{
+				break;
+			}
+		}
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCubelithSnapFarFromCubeNoCandidateTest, "CUBELITH.Core.Snap.FarFromCubeNoCandidate",
+	EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::ProductFilter)
+
+bool FCubelithSnapFarFromCubeNoCandidateTest::RunTest(const FString& Parameters)
+{
+	using namespace CubelithCoreTests;
+
+	// 立方体から遠く離れた配置では候補が出ない
+	const Cubelith::FGeneratedPuzzle Puzzle = Cubelith::GeneratePuzzle(4, 5, 3);
+	const TArray<Cubelith::FPlacement> Placements =
+		SnapTestDetail::TranslateOne(Puzzle.Solution, 0, Cubelith::Vec3(20, 20, 20));
+
+	TestFalse(TEXT("立方体から遠く離れた配置では候補が出ない"),
+		Cubelith::SnapCandidate(Puzzle.Pieces, Placements, 0, 4).IsSet());
 
 	return true;
 }

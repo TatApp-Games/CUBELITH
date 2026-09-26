@@ -232,6 +232,35 @@ namespace CubelithCoreTests
 		return true;
 	}
 
+	bool ReadUint32Field(const TSharedPtr<FJsonObject>& Object, const FString& FieldName, uint32& OutValue, FString& OutError)
+	{
+		OutValue = 0;
+
+		if (!Object.IsValid())
+		{
+			OutError = FString::Printf(TEXT("%s を読もうとしたが JSON が無効"), *FieldName);
+			return false;
+		}
+
+		double Number = 0.0;
+		if (!Object->TryGetNumberField(FieldName, Number))
+		{
+			OutError = FString::Printf(TEXT("%s が数値として読めない"), *FieldName);
+			return false;
+		}
+
+		// 照合データの数値は整数だけ（Docs/FIXTURES.md）。double からの取りこぼしを避けて丸めてから整数にする
+		const int64 Rounded = FMath::RoundToInt64(Number);
+		if (Rounded < 0 || Rounded > static_cast<int64>(MAX_uint32))
+		{
+			OutError = FString::Printf(TEXT("%s が uint32 に入らない: %lld"), *FieldName, Rounded);
+			return false;
+		}
+
+		OutValue = static_cast<uint32>(Rounded);
+		return true;
+	}
+
 	bool ReadVec3(const TSharedPtr<FJsonValue>& Value, const FString& What, Cubelith::FVec3& OutVec3, FString& OutError)
 	{
 		OutVec3 = Cubelith::Vec3(0, 0, 0);
@@ -288,6 +317,61 @@ namespace CubelithCoreTests
 				return false;
 			}
 			OutVec3s.Add(Value);
+		}
+
+		return true;
+	}
+
+	bool ReadPieceArray(const TSharedPtr<FJsonObject>& Object, const FString& FieldName, TArray<Cubelith::FPiece>& OutPieces, FString& OutError)
+	{
+		OutPieces.Reset();
+
+		if (!Object.IsValid())
+		{
+			OutError = FString::Printf(TEXT("%s を読もうとしたが JSON が無効"), *FieldName);
+			return false;
+		}
+
+		const TArray<TSharedPtr<FJsonValue>>* Rows = nullptr;
+		if (!Object->TryGetArrayField(FieldName, Rows) || Rows == nullptr)
+		{
+			OutError = FString::Printf(TEXT("%s が配列として読めない"), *FieldName);
+			return false;
+		}
+
+		OutPieces.Reserve(Rows->Num());
+		for (int32 Index = 0; Index < Rows->Num(); ++Index)
+		{
+			const FString What = FString::Printf(TEXT("%s[%d]"), *FieldName, Index);
+
+			const TSharedPtr<FJsonObject>* PieceObject = nullptr;
+			if (!(*Rows)[Index].IsValid() || !(*Rows)[Index]->TryGetObject(PieceObject) || PieceObject == nullptr || !PieceObject->IsValid())
+			{
+				OutError = FString::Printf(TEXT("%s がオブジェクトとして読めない"), *What);
+				OutPieces.Reset();
+				return false;
+			}
+
+			// キーは id・voxels の 2 つ（Docs/FIXTURES.md の puzzle_n{N}_m{M}.json）
+			int32 Id = 0;
+			if (!(*PieceObject)->TryGetNumberField(TEXT("id"), Id))
+			{
+				OutError = FString::Printf(TEXT("%s に id が無い"), *What);
+				OutPieces.Reset();
+				return false;
+			}
+
+			Cubelith::FPiece Piece;
+			Piece.Id = Id;
+			// voxels は局所座標なので、正規化（CreatePiece）を通さずそのまま読む
+			if (!ReadVec3Array(*PieceObject, TEXT("voxels"), Piece.Voxels, OutError))
+			{
+				OutError = FString::Printf(TEXT("%s の %s"), *What, *OutError);
+				OutPieces.Reset();
+				return false;
+			}
+
+			OutPieces.Add(MoveTemp(Piece));
 		}
 
 		return true;
