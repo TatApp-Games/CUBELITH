@@ -47,13 +47,15 @@
 
 ## 7. 技術構成
 
-コマンドの細部は U0 で試して、UE 用の CLAUDE.md に書く。
+ビルド・テストのコマンドと開発ルールは `../Source/CLAUDE.md`（UE 版の CLAUDE.md）。
 
 ```
 CUBELITH.uproject
 Config/
 Content/                  人が作るアセット
+Scripts/                  ビルド・テスト・エディタ起動（pwsh）
 Source/
+    CLAUDE.md             UE 版の CLAUDE.md
     CUBELITH/             ゲーム本体（描画・入力・UI・セーブの C++）
     CUBELITHCore/         ゲームロジック（RULES.md 3 章）。WebMock の src/core に対応し、描画に依存しない
         Private/Tests/    Automation Test と照合データ（Fixtures/）
@@ -80,7 +82,7 @@ WebMock/                  Web 版（参照実装と照合データの出どこ�
 
 ### 7.3 テストと照合データ
 
-- ゲームロジックは UE の Automation Test で保証する。WebMock の `tests/` を移植する。テストはエディタのコマンドライン（`UnrealEditor-Cmd.exe` を `-nullrhi` などで起動）で回す。Launcher 版のエンジンでそのまま使える
+- ゲームロジックは UE の Automation Test で保証する。WebMock の `tests/` を移植する。テストは `Scripts/Test.ps1` で回す（ビルドしてから `UnrealEditor-Cmd.exe` を `-nullrhi` で起動し、書き出された結果の JSON で合否を決める）。Launcher 版のエンジンでそのまま使える
 - 照合データ（RULES.md 3.6）: WebMock が書き出した JSON を `Source/CUBELITHCore/Private/Tests/Fixtures/` に置く（28 ファイル）
   - **JSON の形と作り方は `FIXTURES.md`**（照合データの形の正）。書き出しは WebMock の `npm run export:fixtures`（ルートからは `npm --prefix WebMock run export:fixtures`）
   - 対象: N と M のプリセット 25 通り × パズルの回転 2 通り × シード 3 個
@@ -97,13 +99,15 @@ WebMock/                  Web 版（参照実装と照合データの出どこ�
   - アセットは意味のある変更のときだけ保存・コミットする
 - `Binaries/`・`Intermediate/`・`Saved/`・`DerivedDataCache/`・`.vs/`・生成されるソリューションファイルなどは git 管理外
 
-### 7.5 watch の作業ツリー
+### 7.5 watch とエディタの同時利用
 
-- watch はルートとは別の作業ツリー（`git worktree`。`E:\Projects\TatApp\CUBELITH-watch`）で回す。人はルートの作業ツリーでエディタを開く
-  - 理由: エディタが開いていて Live Coding が有効だと、同じプロジェクトのコマンドラインのビルドが通らない。watch がブランチを切り替えると、エディタで開いているアセットとぶつかる
-- 同じブランチは 2 つの作業ツリーで同時に checkout できない。watch の作業ツリーが `develop` を持ち、人の作業ツリーは別のブランチで作業して `develop` と取り込み合う。手順は U0 で試して、UE 用の CLAUDE.md とルートの CLAUDE.md（「watch はこのルートで回す」）を書き換える
-- `Auto_Tasks/` は watch の作業ツリーに置く。`Binaries/`・`Intermediate/` は作業ツリーごとに持つ
-- verify のタイムアウトは watch.ps1 の既定 30 分。エンジンはビルド済みで、ビルドするのはプロジェクトのモジュールだけなので、この範囲に収まる見込み
+- **今は作業ツリーを分けない**（2026-09-26 に決定）。watch はルートの `develop` で回し、**watch を回している間はエディタを開かない**
+  - 理由: エディタが開いていて Live Coding が有効だと、同じプロジェクトのコマンドラインのビルド（verify）が通らない。watch がブランチを切り替えると、エディタで開いているアセットとぶつかる
+  - U1〜U4 は人がエディタを使う場面が少ないので、時間で分ければ足りる
+- エディタでの作業を watch と並行したくなったら（遅くとも U5）、watch 用の作業ツリー（`git worktree`。例 `E:\Projects\TatApp\CUBELITH-watch`）に分ける。その場合の注意:
+  - 同じブランチは 2 つの作業ツリーで同時に checkout できないので、watch は `develop` とは別の元ブランチで動く。AI の成果は人の作業ツリーでその元ブランチをマージして取り込み、仕様の変更は watch を止めてから watch の作業ツリーで `develop` をマージして渡す
+  - `Auto_Tasks/` と `/auto-tasks-*` の実行場所が watch の作業ツリーに移り、`Binaries/`・`Intermediate/`・`WebMock/node_modules` も作業ツリーごとに要る。ルートの CLAUDE.md（「watch はこのルートで回す」）と `Source/CLAUDE.md` を書き換える
+- verify のタイムアウトは watch.ps1 の既定 30 分。`Scripts/Test.ps1` はビルド込みで 1 分未満（U0 時点）
 
 ### 7.6 エディタの MCP
 
@@ -116,7 +120,7 @@ WebMock/                  Web 版（参照実装と照合データの出どこ�
 
 | 段階 | 内容 | 担当 | 完了の目安 |
 |---|---|---|---|
-| U0 | 雛形: `.uproject` と C++ モジュール 2 つ（7.1）・テスト、`.gitignore` / `.gitattributes`（7.4）、watch の作業ツリー（7.5）、UE 用の CLAUDE.md（コマンド・開発ルール・タスクの切り方） | 人と AI | コマンドラインでビルドとテストが通る |
+| U0 | 雛形: `.uproject` と C++ モジュール 2 つ（7.1）・テスト、`.gitignore` / `.gitattributes`（7.4）、エディタの MCP（7.6）、UE 用の CLAUDE.md（`Source/CLAUDE.md`。コマンド・開発ルール・タスクの切り方）。2026-09-26 に完了 | 人と AI | コマンドラインでビルドとテストが通る |
 | U1 | ゲームロジックの移植: RULES.md 3 章（グリッド・向き・乱数・生成・散らし・クリア判定・スナップ・固定とヒント）+ テスト + 照合データ | AI | テストが通り、照合データと一致する |
 | U2 | 描画: ピースを ISM で表示、散らばった初期配置、軌道カメラ（マテリアルは仮） | AI | 生成結果が見える |
 | U3 | 操作: 選択・グリッド移動・90 度回転・クリア検知（演出なし） | AI | 手でクリアできる |
@@ -126,7 +130,7 @@ WebMock/                  Web 版（参照実装と照合データの出どこ�
 
 ## 9. 受け入れ条件（verify に使えるもの）
 
-- ビルドとテストがコマンドラインで通ること（コマンドは U0 で決める）
+- ビルドとテストがコマンドラインで通ること（`Scripts/Build.ps1` / `Scripts/Test.ps1`）
 - ゲームロジック: `../WebMock/SPEC.md` 9 章と同じ性質（生成の網羅・連結、判定、向き）を満たし、照合データと一致すること
 - 見た目・手触りは機械判定できないので、人が実機で確認する
 

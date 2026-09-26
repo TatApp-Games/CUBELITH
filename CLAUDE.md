@@ -5,10 +5,11 @@
 ## ディレクトリ構成
 
 ```
-CUBELITH.uproject     UE5 版（本番）のプロジェクト。Config/・Content/・Source/ と合わせて、ルートが UE プロジェクトのルート
+CUBELITH.uproject     UE5 版（本番）のプロジェクト。Config/・Content/・Source/・Scripts/ と合わせて、ルートが UE プロジェクトのルート
 Config/
 Content/
-Source/
+Source/               C++。UE 版の詳細は Source/CLAUDE.md
+Scripts/              UE 版のビルド・テスト・エディタ起動
 Docs/
     RULES.md          ゲームルールの正（Web 版・UE 版で共通）
     SPEC_UE.md        UE5 版（本番）の実装仕様。RULES.md をどこまで反映したかもここ
@@ -19,7 +20,7 @@ Auto_Tasks/           自動実装体制の作業フォルダ（git 管理外）
 .mcp.json             UE エディタの MCP サーバー（エディタを開いているときだけ使える。Docs/SPEC_UE.md 7.6）
 ```
 
-UE 版の構成とルールは `Docs/SPEC_UE.md` 7 章。UE 用の CLAUDE.md は U0 の残りで作る。
+UE 版の構成は `Docs/SPEC_UE.md` 7 章、コマンド・開発ルール・タスクの切り方は `Source/CLAUDE.md`。
 
 ## 仕様書の構成
 
@@ -38,6 +39,7 @@ UE 版の構成とルールは `Docs/SPEC_UE.md` 7 章。UE 用の CLAUDE.md は
 
 - 要望駆動の新運用で開発する。人は要望をテキストにして `Auto_Tasks/00_要望/` に置く（または `/auto-tasks-request`）。運用の詳細は `Utility/自動化運用/Auto_Tasks運用ガイド.md`
 - **watch はこのルートで回す**（`Auto_Tasks/` はルート直下、git 管理外）。元ブランチは `develop`。`main` の上で watch を回さない
+- **watch を回している間は UE エディタを開かない**（verify のビルドが通らず、ブランチの切り替えがエディタとぶつかる。`Docs/SPEC_UE.md` 7.5）
 - scope はルートからの相対パスで書き、verify はルートで実行される前提で書く
 - サブプロジェクトの要望の切り方・scope・verify の具体例は、そのサブプロジェクトの `CLAUDE.md` の「進め方」節に従う
 
@@ -45,4 +47,4 @@ UE 版の構成とルールは `Docs/SPEC_UE.md` 7 章。UE 用の CLAUDE.md は
 
 - `WebMock/` 配下を触るタスク（要望の分解を含む）では **`WebMock/CLAUDE.md` を必ず読む**（コマンド・技術スタック・座標系・開発ルール・タスクの切り方がそこにある）
 - ゲームのルールに関わるタスク（Web 版・UE 版とも）では **`Docs/RULES.md` を読む**
-- UE 版に関わるタスクでは `Docs/SPEC_UE.md` を読む（UE 用の CLAUDE.md は U0 で作る）
+- UE 版（`CUBELITH.uproject`・`Config/`・`Content/`・`Source/`・`Scripts/`）を触るタスク（要望の分解を含む）では **`Source/CLAUDE.md` と `Docs/SPEC_UE.md` を必ず読む**
