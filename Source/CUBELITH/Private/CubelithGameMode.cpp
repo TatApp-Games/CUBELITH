@@ -1,10 +1,221 @@
 #include "CubelithGameMode.h"
 
+#include "Engine/World.h"
+#include "GameFramework/PlayerController.h"
+#include "Math/RandomStream.h"
+#include "Misc/DateTime.h"
+#include "TimerManager.h"
+
+#include "CubelithLog.h"
 #include "CubelithOrbitPawn.h"
+#include "CubelithPuzzleActor.h"
+#include "Generate.h"
+
+namespace
+{
+	/**
+	 * TryFrameCamera の再試行の間隔（秒）と上限。上限に達したら諦めて警告を出す。
+	 * 間隔をフレーム時間より短くしてあるのは、待つ相手（Pawn の生成と BeginPlay）が整った次の
+	 * フレームで合わせて、初期の距離のままの絵が何フレームも映らないようにするため
+	 * （FTimerManager は繰り返しのタイマーを 1 ティックに 1 回しか撃たないので、実質「毎フレーム試す」になる）。
+	 */
+	constexpr float FrameCameraRetryIntervalSeconds = 0.01f;
+	constexpr int32 MaxFrameCameraAttempts = 300;
+}
 
 ACubelithGameMode::ACubelithGameMode()
 {
 	// マップ /Game/Maps/Main に PlayerStart が無ければ Pawn はワールド原点に湧く。軌道カメラの注視点は
-	// 立方体の中心（= 原点。003 で合わせる）なのでそれでよく、マップには手を入れない
+	// 立方体の中心（= パズルのアクタを置くワールド原点）なのでそれでよく、マップには手を入れない
 	DefaultPawnClass = ACubelithOrbitPawn::StaticClass();
+}
+
+void ACubelithGameMode::BeginPlay()
+{
+	Super::BeginPlay();
+
+	StartPuzzle();
+}
+
+void ACubelithGameMode::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(FrameCameraTimer);
+	}
+	// FGame は UObject ではないのでここで畳む。OnChange は弱参照越しなので、
+	// 畳む前に呼ばれても消えた GameMode / アクタには触らない
+	Game.Reset();
+
+	Super::EndPlay(EndPlayReason);
+}
+
+void ACubelithGameMode::StartPuzzle()
+{
+	UWorld* World = GetWorld();
+	if (World == nullptr)
+	{
+		return;
+	}
+
+	// 解釈: SpaceSize / PieceCount は人がエディタで動かせるので、CUBELITHCore の checkf に落ちないよう
+	// ここで範囲に丸める（RULES.md 3.1 の N は 3..7、M は 2..MaxPieces(N)）。丸めたときは気付けるよう警告を出す
+	const int32 N = FMath::Clamp(SpaceSize, Cubelith::MinSpaceSize, Cubelith::MaxSpaceSize);
+	const int32 M = FMath::Clamp(PieceCount, Cubelith::MinPieceCount, Cubelith::MaxPieces(N));
+	if (N != SpaceSize || M != PieceCount)
+	{
+		UE_LOG(LogCubelith, Warning,
+			TEXT("難易度が範囲外なので丸めた: N=%d → %d, M=%d → %d"), SpaceSize, N, PieceCount, M);
+	}
+
+	const uint32 ResolvedSeed = ResolveSeed();
+
+	// 生成（RULES.md 3.2）
+	const Cubelith::FGeneratedPuzzle Puzzle = Cubelith::GeneratePuzzle(N, M, ResolvedSeed);
+
+	// 初期散らし（RULES.md 3.2-5）。ヒントで固定したピースを残す Keep は U4 で使うのでここでは空
+	Cubelith::FScatterOptions ScatterOptions;
+	ScatterOptions.bAllowRotation = bAllowRotation;
+	const TArray<Cubelith::FPlacement> Scattered =
+		Cubelith::ScatterPlacements(Puzzle.Pieces, N, ResolvedSeed, ScatterOptions);
+
+	// 配置が変わったら描画に反映する（U3 で操作が入ったときに追従する。Game.h の設計どおり）。
+	// FGame の寿命は GameMode のメンバとして持つが、コールバックが GameMode より長生きしても
+	// 壊れないよう弱参照で握る
+	TWeakObjectPtr<ACubelithGameMode> WeakThis(this);
+	Game = MakeUnique<Cubelith::FGame>(Puzzle.Pieces, N, Scattered,
+		[WeakThis](TArrayView<const Cubelith::FPlacement> Placements, bool /*bSolved*/)
+		{
+			ACubelithGameMode* Self = WeakThis.Get();
+			if (Self == nullptr)
+			{
+				return;
+			}
+			if (ACubelithPuzzleActor* Actor = Self->PuzzleActor.Get())
+			{
+				Actor->UpdatePlacements(Placements);
+			}
+		});
+
+	// ピースを描くアクタ。原点に置くので、アクタの原点 = 解答空間の中心 = 軌道カメラの注視点になる
+	FActorSpawnParameters SpawnParameters;
+	SpawnParameters.Owner = this;
+	SpawnParameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	PuzzleActor = World->SpawnActor<ACubelithPuzzleActor>(
+		ACubelithPuzzleActor::StaticClass(), FTransform::Identity, SpawnParameters);
+	if (PuzzleActor == nullptr)
+	{
+		UE_LOG(LogCubelith, Error, TEXT("ACubelithPuzzleActor を湧かせられなかった"));
+		return;
+	}
+
+	PuzzleActor->Build(Game->Pieces(), N);
+	PuzzleActor->UpdatePlacements(Game->Placements());
+
+	UE_LOG(LogCubelith, Log, TEXT("パズルを開始した: N=%d, M=%d, パズルの回転=%s, seed=%u, ピース数=%d"),
+		N, M, bAllowRotation ? TEXT("あり") : TEXT("なし"), ResolvedSeed, Puzzle.Pieces.Num());
+
+	// Pawn の生成順に依存するので、まだ湧いていなければ湧くまで短い間隔で試し直す
+	if (!TryFrameCamera())
+	{
+		FrameCameraAttempts = 0;
+		World->GetTimerManager().SetTimer(FrameCameraTimer, this, &ACubelithGameMode::RetryFrameCamera,
+			FrameCameraRetryIntervalSeconds, /*bLoop=*/true);
+	}
+}
+
+uint32 ACubelithGameMode::ResolveSeed()
+{
+	if (Seed >= 0 && Seed <= static_cast<int64>(MAX_uint32))
+	{
+		return static_cast<uint32>(Seed);
+	}
+
+	if (Seed > static_cast<int64>(MAX_uint32))
+	{
+		UE_LOG(LogCubelith, Warning,
+			TEXT("Seed=%lld は符号なし 32 bit に収まらないのでランダムに引き直す"), Seed);
+	}
+
+	// 起動ごとに変える。FMath::Rand はプラットフォームによって 15 bit しか返さないので、
+	// 時刻で種を撒いた FRandomStream から 32 bit まるごと取る
+	const FRandomStream Stream(static_cast<int32>(FDateTime::UtcNow().GetTicks() & static_cast<int64>(MAX_int32)));
+	const uint32 RandomSeed = Stream.GetUnsignedInt();
+
+	// 人が同じパズルを再現できるよう、引いた値を必ず残す（GameMode の Seed にこの値を入れれば同じになる）
+	UE_LOG(LogCubelith, Log, TEXT("シードをランダムに引いた: %u（再現するには GameMode の Seed にこの値を入れる）"),
+		RandomSeed);
+
+	return RandomSeed;
+}
+
+bool ACubelithGameMode::TryFrameCamera()
+{
+	const UWorld* World = GetWorld();
+	if (World == nullptr || PuzzleActor == nullptr)
+	{
+		return false;
+	}
+
+	const double Radius = PuzzleActor->GetBoundingRadiusCm();
+	if (!(Radius > 0.0))
+	{
+		// まだ何も置いていない（= 合わせる対象が無い）。再試行しても変わらないので諦める
+		return true;
+	}
+
+	for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
+	{
+		const APlayerController* PlayerController = It->Get();
+		if (PlayerController == nullptr)
+		{
+			continue;
+		}
+
+		ACubelithOrbitPawn* OrbitPawn = Cast<ACubelithOrbitPawn>(PlayerController->GetPawn());
+		if (OrbitPawn == nullptr)
+		{
+			continue;
+		}
+
+		// Pawn の BeginPlay（ResetToInitial）は距離・向きを初期値へ戻すので、それより先に合わせても消される。
+		// アクタの BeginPlay が呼ばれる順は決まっていない（AWorldSettings::NotifyBeginPlay のアクタの巡回順）ので、
+		// まだ呼ばれていなければ合わせずに再試行へ回す
+		if (!OrbitPawn->HasActorBegunPlay())
+		{
+			return false;
+		}
+
+		// 注視点は立方体の中心（= パズルのアクタの原点）。距離は散らした全ボクセルが収まるところまで引く
+		OrbitPawn->SetOrbitTarget(PuzzleActor->GetActorLocation());
+		OrbitPawn->FrameSphere(Radius);
+		return true;
+	}
+
+	return false;
+}
+
+void ACubelithGameMode::RetryFrameCamera()
+{
+	++FrameCameraAttempts;
+
+	UWorld* World = GetWorld();
+	if (World == nullptr)
+	{
+		return;
+	}
+
+	if (TryFrameCamera())
+	{
+		World->GetTimerManager().ClearTimer(FrameCameraTimer);
+		return;
+	}
+
+	if (FrameCameraAttempts >= MaxFrameCameraAttempts)
+	{
+		World->GetTimerManager().ClearTimer(FrameCameraTimer);
+		UE_LOG(LogCubelith, Warning,
+			TEXT("軌道カメラ（ACubelithOrbitPawn）が %d 回試しても見つからないのでカメラ合わせを諦めた"),
+			MaxFrameCameraAttempts);
+	}
 }
