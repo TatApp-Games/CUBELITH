@@ -16,6 +16,7 @@ class USpringArmComponent;
  * 注視点（このアクタの位置）のまわりを球面座標（方位角・仰角・距離）で回るカメラ。
  * ドラッグで旋回、ホイール / ピンチでズームする。camera.ts と同じく「目標値」と「現在値」を分け、
  * Tick で目標値へ減衰しながら追従させることで慣性を出す。
+ * 旋回は bOrbitEnabled で止められるが、ズームは止まらない（RULES.md 3.3。選択の有無によらず効かせる）。
  *
  * 入力は Enhanced Input の InputMappingContext / InputAction（= `.uasset`）を使わず、
  * Tick で APlayerController から生の入力状態をポーリングして読む。アセットを作らないため（Docs/SPEC_UE.md 0 章）。
@@ -36,7 +37,14 @@ public:
 	/** 半径 BoundingRadiusCm の球が画面に収まる距離へ引く（camera.ts の frame）。現在値にも即時反映する */
 	void FrameSphere(double BoundingRadiusCm);
 
-	/** 旋回・ズームの有効・無効（camera.ts の enabled）。U3 でピースを掴んでいる間に止めるため。U2 では常に有効 */
+	/**
+	 * ドラッグでの**旋回**の有効・無効（camera.ts の enabled のうち旋回の部分）。
+	 *
+	 * ピースを選択している間は ACubelithPlayerController がここを false にして、ドラッグをピース操作に回す。
+	 * 何も無い場所から始めたドラッグの間だけは、選択中でも true に戻る（RULES.md 3.3「カメラ」）。
+	 *
+	 * **ズームはこれでは止まらない**。ホイール / ピンチはピースの選択の有無によらず常に効く（RULES.md 3.3）。
+	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cubelith|Camera")
 	bool bOrbitEnabled = true;
 

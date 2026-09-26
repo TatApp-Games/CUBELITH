@@ -121,19 +121,15 @@ void ACubelithOrbitPawn::PollInput()
 	PlayerController->GetInputTouchState(ETouchIndex::Touch1, Touch1X, Touch1Y, bTouch1Down);
 	PlayerController->GetInputTouchState(ETouchIndex::Touch2, Touch2X, Touch2Y, bTouch2Down);
 
-	if (!bOrbitEnabled)
-	{
-		// 無効のあいだは追跡をやめる（camera.ts が enabled = false で pointers を捨てるのと同じ。
-		// 有効に戻したときに、その間の指の移動でカメラが飛ばないようにする）
-		bWasTouch1Down = false;
-		bWasTouch2Down = false;
-		PreviousPinchDistance = 0.0;
-		return;
-	}
+	// bOrbitEnabled が false でも指の位置は追い続ける（止まるのは旋回だけで、ピンチのズームは効かせるため。
+	// RULES.md 3.3「ホイール / ピンチでズーム（ピースの選択の有無によらない）」）。
+	// 旋回の有無はドラッグを始めた時点で決まり、途中で変わらない（ACubelithPlayerController が決める）ので、
+	// 「無効の間の指の動きが有効に戻った瞬間に効いてカメラが飛ぶ」ことは起きない
 
 	if (bTouch1Down && bTouch2Down)
 	{
-		// 2 本指: 2 点間の距離の比で距離を変える（camera.ts の 2 本指ピンチ）。指を広げると寄る
+		// 2 本指: 2 点間の距離の比で距離を変える（camera.ts の 2 本指ピンチ）。指を広げると寄る。
+		// ズームなので bOrbitEnabled は見ない
 		const double PinchDistance = FVector2D::Distance(FVector2D(Touch1X, Touch1Y), FVector2D(Touch2X, Touch2Y));
 		if (bWasTouch1Down && bWasTouch2Down && PreviousPinchDistance > 0.0 && PinchDistance > 0.0)
 		{
@@ -146,7 +142,7 @@ void ACubelithOrbitPawn::PollInput()
 	{
 		// 1 本指: 旋回。タッチの座標は画面の座標（Y は下向きが正）なので camera.ts の dy としてそのまま使える。
 		// 直前が 2 本指だったフレームは差分を使わない（指を 1 本離した瞬間にカメラが飛ぶため）
-		if (bWasTouch1Down && !bWasTouch2Down)
+		if (bOrbitEnabled && bWasTouch1Down && !bWasTouch2Down)
 		{
 			AddOrbitDelta(Touch1X - PreviousTouch1.X, Touch1Y - PreviousTouch1.Y);
 		}
@@ -167,7 +163,7 @@ void ACubelithOrbitPawn::PollInput()
 		return;
 	}
 
-	if (PlayerController->IsInputKeyDown(EKeys::LeftMouseButton))
+	if (bOrbitEnabled && PlayerController->IsInputKeyDown(EKeys::LeftMouseButton))
 	{
 		double MouseDeltaX = 0.0;
 		double MouseDeltaY = 0.0;
@@ -176,7 +172,8 @@ void ACubelithOrbitPawn::PollInput()
 		AddOrbitDelta(MouseDeltaX, -MouseDeltaY);
 	}
 
-	// そのフレームのホイールの回転量（1 ノッチで ±1。手前に転がすと正）
+	// そのフレームのホイールの回転量（1 ノッチで ±1。手前に転がすと正）。
+	// ホイールのズームは旋回を止めている間（ピースを選択中）も効かせる（RULES.md 3.3）
 	const double WheelNotches = PlayerController->GetInputAnalogKeyState(EKeys::MouseWheelAxis);
 	if (!FMath::IsNearlyZero(WheelNotches) && WheelZoomScalePerNotch > 1.0)
 	{

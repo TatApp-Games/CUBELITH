@@ -62,6 +62,13 @@ public:
 	int32 FindPieceIdByComponent(const UPrimitiveComponent* Component) const;
 
 	/**
+	 * ロジックのグリッド座標を、このアクタが実際にボクセルを置くワールド座標へ直す。
+	 * 中心合わせのオフセットとアクタの変換まで通すので、UpdatePlacements が置くインスタンスと同じ位置になる。
+	 * ACubelithPlayerController がドラッグの感度（1 ボクセルの画面上の大きさ）を測るのに使う（RULES.md 3.3「移動」）
+	 */
+	FVector GridToWorldLocation(const Cubelith::FVec3& Voxel) const;
+
+	/**
 	 * 選択中のピースを置き換える（未選択は INDEX_NONE）。前に選んでいたピースは元の色へ戻る。
 	 * 仮の見せ方として、選んだピースの色を白へ寄せて明るくする（縁取りや発光での本実装は U5）
 	 */

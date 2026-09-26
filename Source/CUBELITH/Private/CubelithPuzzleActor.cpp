@@ -303,6 +303,14 @@ int32 ACubelithPuzzleActor::FindPieceIdByComponent(const UPrimitiveComponent* Co
 	return INDEX_NONE;
 }
 
+FVector ACubelithPuzzleActor::GridToWorldLocation(const Cubelith::FVec3& Voxel) const
+{
+	// UpdatePlacements がインスタンスを置くのと同じ計算（アクタのローカル）をしてから、アクタの変換でワールドへ出す。
+	// 今はワールド原点に置いているので変換は恒等だが、アクタを動かしても合うようにしてある
+	const FVector Local = Cubelith::VoxelToWorld(Voxel) + SolutionSpaceCenterOffset(SpaceSize);
+	return GetActorTransform().TransformPosition(Local);
+}
+
 void ACubelithPuzzleActor::SetSelectedPiece(int32 PieceId)
 {
 	if (SelectedPieceId == PieceId)
