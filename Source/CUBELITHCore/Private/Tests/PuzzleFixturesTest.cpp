@@ -1,6 +1,7 @@
 // 照合データ（Docs/FIXTURES.md の puzzle_n{N}_m{M}.json）と生成結果の一致を確かめる（RULES.md 3.6）
 // 25 ファイル × 6 ケース（allowRotation が false → true、その中で puzzleSeeds の順）を全部回す
-// このファイルで比べるのは pieces / solution / scatter / reshuffleWithoutHints。hintPieceIds / reshuffleWithHints は 007 で足す
+// このファイルで比べるのは pieces / solution / scatter / reshuffleWithoutHints / hintPieceIds / reshuffleWithHints の 6 つ全部
+// Fixtures/ の 28 ファイルすべてが照合の対象になっていることは CUBELITH.Core.Fixtures.Coverage が確かめる
 // WebMock/src/core のファイルとの 1 対 1 の対象外（照合データのファイルに合わせてテスト側の都合で切ったファイル）
 // ケース数が多いので、一致しているときは記録を増やさず、食い違ったときだけ AddError してそのケースの残りを打ち切る
 
@@ -9,8 +10,10 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "FixtureHelpers.h"
+#include "Game.h"
 #include "Generate.h"
 #include "Grid.h"
+#include "Hint.h"
 #include "Piece.h"
 
 namespace CubelithCoreTests
@@ -41,9 +44,10 @@ namespace CubelithCoreTests
 
 		/**
 		 * index.json の combinations（25 件）をたどって全ケース（25 × 6 = 150 件）を読む。
+		 * OutHintCount を渡すと index.json の hintCount も読む（コードに書き写さない。Docs/FIXTURES.md）。
 		 * 読めなければ false を返し、理由を OutError に入れる。
 		 */
-		bool LoadPuzzleCases(TArray<FPuzzleCase>& OutCases, FString& OutError)
+		bool LoadPuzzleCases(TArray<FPuzzleCase>& OutCases, FString& OutError, int32* OutHintCount = nullptr)
 		{
 			OutCases.Reset();
 
@@ -62,6 +66,23 @@ namespace CubelithCoreTests
 			{
 				OutError = TEXT("index.json の puzzleSeeds が空");
 				return false;
+			}
+
+			// ヒントの回数（Docs/FIXTURES.md の hintCount = 2）。値はコードに書き写さず JSON から読む
+			if (OutHintCount != nullptr)
+			{
+				int32 HintCount = 0;
+				if (!Index->TryGetNumberField(TEXT("hintCount"), HintCount))
+				{
+					OutError = TEXT("index.json に hintCount が無い");
+					return false;
+				}
+				if (HintCount < 0)
+				{
+					OutError = FString::Printf(TEXT("index.json の hintCount が負: %d"), HintCount);
+					return false;
+				}
+				*OutHintCount = HintCount;
 			}
 
 			const TArray<TSharedPtr<FJsonValue>>* Combinations = nullptr;
@@ -391,6 +412,139 @@ namespace CubelithCoreTests
 
 			return true;
 		}
+
+		/**
+		 * 1 ケース分の hintPieceIds と reshuffleWithHints を比べる（Docs/FIXTURES.md「各ケースの作り方」の 4 と 5）。
+		 * 手順は TS の buildCase と同じ順にする（ヒントは乱数を使わないが、散らし直しは keep の内容で変わる）。
+		 * 食い違ったら AddError して false（そのケースの残りは見ない）
+		 */
+		bool CheckHints(FAutomationTestBase& Test, const FPuzzleCase& Case, int32 HintCount)
+		{
+			FString Error;
+
+			TArray<int32> ExpectedHintPieceIds;
+			if (!ReadInt32Array(Case.Json, TEXT("hintPieceIds"), ExpectedHintPieceIds, Error))
+			{
+				Test.AddError(FString::Printf(TEXT("%s: %s"), *Describe(Case), *Error));
+				return false;
+			}
+
+			TArray<Cubelith::FPlacement> ExpectedReshuffle;
+			if (!ReadPlacementArray(Case.Json, TEXT("reshuffleWithHints"), ExpectedReshuffle, Error))
+			{
+				Test.AddError(FString::Printf(TEXT("%s: %s"), *Describe(Case), *Error));
+				return false;
+			}
+
+			// 1: generatePuzzle(n, m, seed) の pieces と solution
+			const Cubelith::FGeneratedPuzzle Puzzle = Cubelith::GeneratePuzzle(Case.N, Case.M, Case.Seed);
+
+			// 解答を id で引く小さな入口（TS の solutionOf）
+			auto SolutionOf = [&Puzzle](int32 PieceId) -> const Cubelith::FPlacement*
+			{
+				return Puzzle.Solution.FindByPredicate(
+					[PieceId](const Cubelith::FPlacement& Placement) -> bool { return Placement.PieceId == PieceId; });
+			};
+
+			// 2: scatterPlacements(pieces, n, seed, { allowRotation }) の結果から始める
+			Cubelith::FScatterOptions ScatterOptions;
+			ScatterOptions.bAllowRotation = Case.bAllowRotation;
+			TArray<Cubelith::FPlacement> Current =
+				Cubelith::ScatterPlacements(Puzzle.Pieces, Case.N, Case.Seed, ScatterOptions);
+
+			// 4: hintCount 回まで、PickHintPiece で選んだピースを解答の配置へ置いて固定していく
+			TArray<int32> HintPieceIds;
+			for (int32 Step = 0; Step < HintCount; ++Step)
+			{
+				const TOptional<int32> Picked = Cubelith::PickHintPiece(Current, Puzzle.Solution, HintPieceIds);
+				if (!Picked.IsSet())
+				{
+					// 未固定が 1 個以下ならそこで打ち切る（RULES.md 3.7）
+					break;
+				}
+
+				const Cubelith::FPlacement* Answer = SolutionOf(Picked.GetValue());
+				if (Answer == nullptr)
+				{
+					Test.AddError(FString::Printf(TEXT("%s: 解答に無いピース id %d が選ばれた"), *Describe(Case), Picked.GetValue()));
+					return false;
+				}
+				Current = Cubelith::ReplacePlacement(Current, *Answer);
+				HintPieceIds.Add(Picked.GetValue());
+			}
+
+			// hintPieceIds は選ばれた順の配列。長さは hintCount 以下（Docs/FIXTURES.md）
+			if (HintPieceIds.Num() > HintCount || ExpectedHintPieceIds.Num() > HintCount)
+			{
+				Test.AddError(FString::Printf(TEXT("%s: hintPieceIds の件数が hintCount=%d を超えている（照合データ %d / 生成結果 %d）"),
+					*Describe(Case), HintCount, ExpectedHintPieceIds.Num(), HintPieceIds.Num()));
+				return false;
+			}
+			if (HintPieceIds.Num() != ExpectedHintPieceIds.Num())
+			{
+				Test.AddError(FString::Printf(TEXT("%s: hintPieceIds の件数が違う（照合データ %d / 生成結果 %d）"),
+					*Describe(Case), ExpectedHintPieceIds.Num(), HintPieceIds.Num()));
+				return false;
+			}
+			for (int32 Index = 0; Index < HintPieceIds.Num(); ++Index)
+			{
+				if (HintPieceIds[Index] != ExpectedHintPieceIds[Index])
+				{
+					Test.AddError(FString::Printf(TEXT("%s: hintPieceIds[%d] が違う（照合データ %d / 生成結果 %d）"),
+						*Describe(Case), Index, ExpectedHintPieceIds[Index], HintPieceIds[Index]));
+					return false;
+				}
+			}
+
+			// 5: hintPieceIds の順に solution の配置を並べたものを keep にして散らし直す
+			Cubelith::FScatterOptions HintOptions;
+			HintOptions.bAllowRotation = Case.bAllowRotation;
+			HintOptions.Keep.Reserve(HintPieceIds.Num());
+			for (const int32 PieceId : HintPieceIds)
+			{
+				const Cubelith::FPlacement* Answer = SolutionOf(PieceId);
+				if (Answer == nullptr)
+				{
+					Test.AddError(FString::Printf(TEXT("%s: keep に入れる解答が無いピース id %d"), *Describe(Case), PieceId));
+					return false;
+				}
+				HintOptions.Keep.Add(*Answer);
+			}
+			const TArray<Cubelith::FPlacement> Reshuffle =
+				Cubelith::ScatterPlacements(Puzzle.Pieces, Case.N, Case.Seed, HintOptions);
+
+			if (!ComparePlacements(Test, Case, TEXT("reshuffleWithHints"), ExpectedReshuffle, Reshuffle))
+			{
+				return false;
+			}
+
+			// 固定したピースは solution と同じ配置で残っているはず（Docs/FIXTURES.md）
+			for (const int32 PieceId : HintPieceIds)
+			{
+				const Cubelith::FPlacement* Answer = SolutionOf(PieceId);
+				const Cubelith::FPlacement* Kept = Reshuffle.FindByPredicate(
+					[PieceId](const Cubelith::FPlacement& Placement) -> bool { return Placement.PieceId == PieceId; });
+				if (Answer == nullptr || Kept == nullptr || *Kept != *Answer)
+				{
+					Test.AddError(FString::Printf(TEXT("%s: 固定したピース %d が reshuffleWithHints で解答の配置に残っていない"),
+						*Describe(Case), PieceId));
+					return false;
+				}
+			}
+
+			return true;
+		}
+
+		/** 読んだケースから、実際に開いたパズルのファイル名を重複なく取り出す（並びは combinations の順） */
+		TArray<FString> PuzzleFileNames(const TArray<FPuzzleCase>& Cases)
+		{
+			TArray<FString> Names;
+			for (const FPuzzleCase& Case : Cases)
+			{
+				Names.AddUnique(Case.FileName);
+			}
+			return Names;
+		}
 	}
 }
 
@@ -445,6 +599,104 @@ bool FCubelithPuzzleFixturesScatterTest::RunTest(const FString& Parameters)
 		PuzzleFixturesDetail::CheckScatter(*this, Case);
 	}
 
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCubelithPuzzleFixturesHintsTest, "CUBELITH.Core.Fixtures.PuzzleHints",
+	EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::ProductFilter)
+
+bool FCubelithPuzzleFixturesHintsTest::RunTest(const FString& Parameters)
+{
+	using namespace CubelithCoreTests;
+
+	FString Error;
+	TArray<PuzzleFixturesDetail::FPuzzleCase> Cases;
+	int32 HintCount = 0;
+	if (!PuzzleFixturesDetail::LoadPuzzleCases(Cases, Error, &HintCount))
+	{
+		AddError(Error);
+		return false;
+	}
+
+	// 25 ファイル（N と M のプリセットの組み合わせ）× 6 ケース（Docs/FIXTURES.md）
+	TestEqual(TEXT("ケースの総数"), Cases.Num(), 150);
+
+	// hintPieceIds と reshuffleWithHints は allowRotation とシードで変わるので、6 ケースそれぞれで JSON の値と比べる
+	for (const PuzzleFixturesDetail::FPuzzleCase& Case : Cases)
+	{
+		PuzzleFixturesDetail::CheckHints(*this, Case, HintCount);
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCubelithFixturesCoverageTest, "CUBELITH.Core.Fixtures.Coverage",
+	EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::ProductFilter)
+
+// Fixtures/ の 28 ファイルすべてが、どれかの照合テストで実際に読まれていることを確かめる（U1 の締め）
+bool FCubelithFixturesCoverageTest::RunTest(const FString& Parameters)
+{
+	using namespace CubelithCoreTests;
+
+	FString Error;
+	TArray<PuzzleFixturesDetail::FPuzzleCase> Cases;
+	if (!PuzzleFixturesDetail::LoadPuzzleCases(Cases, Error))
+	{
+		AddError(Error);
+		return false;
+	}
+
+	// このファイルの照合テストが実際に開いたパズルのファイル（combinations を 1 つも飛ばしていないこと）
+	const TArray<FString> PuzzleFiles = PuzzleFixturesDetail::PuzzleFileNames(Cases);
+	TestEqual(TEXT("照合したパズルのファイル数"), PuzzleFiles.Num(), 25);
+	TestEqual(TEXT("ケースの総数"), Cases.Num(), 150);
+
+	// 照合の対象になっているファイルを集める。「含むかどうか」しか見ないので TSet でよい
+	TSet<FString> Covered;
+	Covered.Append(PuzzleFiles);
+	// orientations.json は CUBELITH.Core.Grid.Fixtures、rng.json は CUBELITH.Core.Rng.Fixtures が読む
+	Covered.Add(TEXT("orientations.json"));
+	Covered.Add(TEXT("rng.json"));
+
+	const TSharedPtr<FJsonObject> Index = LoadFixtureIndex(Error);
+	if (!Index.IsValid())
+	{
+		AddError(Error);
+		return false;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* Files = nullptr;
+	if (!Index->TryGetArrayField(TEXT("files"), Files) || Files == nullptr)
+	{
+		AddError(TEXT("index.json に files が無い"));
+		return false;
+	}
+
+	// files は index.json 以外の全ファイル（27 件）。件数と実在は CUBELITH.Core.Fixtures.Index も見ている
+	TestEqual(TEXT("index.json の files の件数"), Files->Num(), 27);
+
+	TSet<FString> Listed;
+	Listed.Reserve(Files->Num());
+	for (const TSharedPtr<FJsonValue>& File : *Files)
+	{
+		const FString FileName = File->AsString();
+		Listed.Add(FileName);
+		if (!Covered.Contains(FileName))
+		{
+			AddError(FString::Printf(TEXT("%s を照合しているテストが無い"), *FileName));
+		}
+	}
+	for (const FString& FileName : Covered)
+	{
+		if (!Listed.Contains(FileName))
+		{
+			AddError(FString::Printf(TEXT("%s を照合しているが index.json の files に無い"), *FileName));
+		}
+	}
+
+	// index.json 自身は LoadFixtureIndex を通る照合テスト（このテストを含む）が読んでいる。
+	// 合わせて Docs/FIXTURES.md の 28 ファイルすべてが照合の対象になる
+	TestEqual(TEXT("照合の対象になっているファイル数（index.json を含む）"), Covered.Num() + 1, 28);
 	return true;
 }
 

@@ -23,10 +23,18 @@ namespace CubelithCoreTests
 	// GenerateTest.cpp 専用のヘルパ。unity ビルドでは他のテストファイルと同じ翻訳単位に入るので、名前をこの中に閉じる
 	namespace GenerateTestDetail
 	{
-		/** 試す空間サイズ（TS の SIZES） */
+		/** 試す空間サイズ（TS の SIZES）。3..7 を書き写さず MinSpaceSize / MaxSpaceSize から作る */
 		const TArray<int32>& Sizes()
 		{
-			static const TArray<int32> Values{ 3, 4, 5, 6, 7 };
+			static const TArray<int32> Values = []() -> TArray<int32>
+			{
+				TArray<int32> Result;
+				for (int32 N = Cubelith::MinSpaceSize; N <= Cubelith::MaxSpaceSize; ++N)
+				{
+					Result.Add(N);
+				}
+				return Result;
+			}();
 			return Values;
 		}
 
@@ -344,6 +352,29 @@ bool FCubelithGenerateMaxPiecesMatchesRuleTest::RunTest(const FString& Parameter
 	TestEqual(TEXT("MaxPieces(5)"), Cubelith::MaxPieces(5), 17);
 	TestEqual(TEXT("MaxPieces(6)"), Cubelith::MaxPieces(6), 22);
 	TestEqual(TEXT("MaxPieces(7)"), Cubelith::MaxPieces(7), 27);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCubelithGenerateSpaceSizeBoundsTest, "CUBELITH.Core.Generate.SpaceSizeBounds",
+	EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::ProductFilter)
+
+bool FCubelithGenerateSpaceSizeBoundsTest::RunTest(const FString& Parameters)
+{
+	using namespace CubelithCoreTests;
+
+	// RULES.md 3.1 の N は 3〜7、M の下限は 2（TS の MIN_SPACE_SIZE / MAX_SPACE_SIZE / MIN_PIECE_COUNT）
+	TestEqual(TEXT("MinSpaceSize"), Cubelith::MinSpaceSize, 3);
+	TestEqual(TEXT("MaxSpaceSize"), Cubelith::MaxSpaceSize, 7);
+	TestEqual(TEXT("MinPieceCount"), Cubelith::MinPieceCount, 2);
+
+	// 他のテストが回す Sizes() はこの下限・上限から作っている
+	const TArray<int32>& Values = GenerateTestDetail::Sizes();
+	TestEqual(TEXT("Sizes() の件数"), Values.Num(), Cubelith::MaxSpaceSize - Cubelith::MinSpaceSize + 1);
+	for (int32 Index = 0; Index < Values.Num(); ++Index)
+	{
+		TestEqual(*FString::Printf(TEXT("Sizes()[%d]"), Index), Values[Index], Cubelith::MinSpaceSize + Index);
+	}
 
 	return true;
 }
