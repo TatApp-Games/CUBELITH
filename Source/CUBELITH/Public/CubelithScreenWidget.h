@@ -17,6 +17,7 @@
 #include "Blueprint/UserWidget.h"
 #include "CoreMinimal.h"
 #include "Templates/Function.h"
+#include "Types/SlateEnums.h"
 
 #include "CubelithScreenWidget.generated.h"
 
@@ -109,6 +110,13 @@ protected:
 	 */
 	UVerticalBox* ConstructCenteredPanelRoot();
 
+	/**
+	 * 画面下部に寄せたパネルを作って画面の根にし、中身を並べる縦箱を返す（RULES.md 6 章の
+	 * 「スマホでは HUD を画面下部に寄せ」）。横は画面幅いっぱいに広げる。
+	 * 作りは ConstructCenteredPanelRoot と同じで、パネルを置く位置だけが違う
+	 */
+	UVerticalBox* ConstructBottomPanelRoot();
+
 	/** 文字を 1 行足す。FontSize は端末非依存の大きさ（既定のフォントをそのまま使う） */
 	UTextBlock* ConstructText(UPanelWidget* Parent, const FText& Text, int32 FontSize);
 
@@ -129,10 +137,34 @@ protected:
 	/** ボタンの選択状態を色で見せる（仮の見せ方。人が UMG で作るときはボタンのスタイルで表す） */
 	static void SetButtonSelected(UButton* Button, bool bSelected);
 
+	/**
+	 * ボタンのラベルを差し替える（HUD の「回転 / 回転解除」「固定 / 固定解除」。RULES.md 6 章）。
+	 *
+	 * 差し替える先はボタンの最初の子の UTextBlock（ConstructButton が入れるもの）。
+	 * 人のレイアウトでラベルが UTextBlock の直の子でなければ何もしない（落とさない）ので、
+	 * ラベルが入れ替わるボタンは UTextBlock を直に入れてもらう（手順は Docs/SPEC_UE.md 4 章）
+	 */
+	static void SetButtonLabel(UButton* Button, const FText& Label);
+
+	/**
+	 * ボタンを出す / 隠す（RULES.md 6 章の「選択しているときだけ出す」）。
+	 *
+	 * 仮の画面ではボタンを USizeBox で包んである（押せる大きさの確保）ので、隠すときは包んでいる
+	 * 入れ物ごと隠す（ボタンだけ隠すと 44 px の空白が残る）。人のレイアウトでは入れ物に何が
+	 * 入っているか分からないのでボタンだけを隠す
+	 */
+	void SetButtonVisible(UButton* Button, bool bVisible) const;
+
+	/** 部品を出す / 隠す（隠すときは場所も取らない Collapsed。部品が無ければ何もしない） */
+	static void SetWidgetVisible(UWidget* Widget, bool bVisible);
+
 	/** 文字の中身を差し替える（部品が無ければ何もしない）。BindWidgetOptional の取りこぼしを毎回書かないため */
 	static void SetTextSafe(UTextBlock* TextBlock, const FText& Text);
 
 private:
+	/** 上の 2 つのパネル（中央寄せ / 下寄せ）の作り。違うのはパネルを置く位置だけ */
+	UVerticalBox* ConstructPanelRoot(EHorizontalAlignment HorizontalAlignment, EVerticalAlignment VerticalAlignment);
+
 	/** PrepareLayout を通したか */
 	bool bLayoutReady = false;
 

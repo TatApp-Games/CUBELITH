@@ -13,10 +13,12 @@
 #include "TimerManager.h"
 
 #include "CubelithDifficulty.h"
+#include "CubelithHudWidget.h"
 #include "CubelithLockOps.h"
 #include "CubelithLog.h"
 #include "CubelithOrbitPawn.h"
 #include "CubelithPlayerController.h"
+#include "CubelithProgress.h"
 #include "CubelithPuzzleActor.h"
 #include "CubelithSave.h"
 #include "CubelithSaveGame.h"
@@ -122,6 +124,7 @@ ACubelithGameMode::ACubelithGameMode()
 	// 画面も同じ理由で C++ のクラスを既定にする。人が UMG のウィジェットブループリントを作ったら
 	// この GameMode の Blueprint 派生でここを差し替える（Docs/SPEC_UE.md 4 章）
 	TitleWidgetClass = UCubelithTitleWidget::StaticClass();
+	PlayWidgetClass = UCubelithHudWidget::StaticClass();
 }
 
 void ACubelithGameMode::InitGame(const FString& MapName, const FString& Options, FString& ErrorMessage)
@@ -279,6 +282,8 @@ void ACubelithGameMode::StartSession(int32 N, int32 M, bool bInAllowRotation, ui
 			// 操作側（ACubelithPlayerController）へ中継する。スナップ候補の発光を計算し直すきっかけ
 			// （RULES.md 5.1。毎フレームは回さず、配置が変わったこのタイミングだけで見る）
 			Self->OnPlacementsChanged.Broadcast(Placements);
+			// 残りピース数とヒントが使えるか（RULES.md 6 章 / 3.7）は配置で変わるので HUD も揃える
+			Self->RefreshHud();
 		});
 
 	// ピースを描くアクタ。原点に置くので、アクタの原点 = 解答空間の中心 = 軌道カメラの注視点になる
@@ -308,10 +313,26 @@ void ACubelithGameMode::StartSession(int32 N, int32 M, bool bInAllowRotation, ui
 	// 軌道カメラの距離合わせはセッションを作るたびに掛け直す（N が変われば収める大きさも変わる）
 	StartFrameCamera();
 
-	// プレイ中の画面へ。HUD は後続タスクで足すので、今はタイトルを外すだけになる
+	// プレイ中の画面（HUD。RULES.md 6 章）へ
 	if (UCubelithScreenWidget* const Widget = BeginScreen(ECubelithScreen::Play))
 	{
-		Widget->AddToViewport();
+		UCubelithHudWidget* const Hud = Cast<UCubelithHudWidget>(Widget);
+		if (Hud == nullptr)
+		{
+			// 人が PlayWidgetClass を別系統のウィジェットに差し替えた。ボタンを結べないので出さない
+			UE_LOG(LogCubelith, Error,
+				TEXT("PlayWidgetClass（%s）が UCubelithHudWidget の派生ではないので HUD を出せない"),
+				*Widget->GetClass()->GetName());
+			ActiveWidget = nullptr;
+			return;
+		}
+
+		BindHud(*Hud);
+		// 回転モードのトグルを出すかは難易度で決まる（RULES.md 6 章）
+		Hud->SetAllowRotation(bSessionAllowRotation);
+		Hud->AddToViewport();
+		// 残りピース数などの初期表示（選択はまだ無い）
+		RefreshHud();
 	}
 }
 
@@ -342,11 +363,11 @@ void ACubelithGameMode::ToggleLock(int32 PieceId)
 
 	if (Action == Cubelith::ELockToggleAction::Lock)
 	{
-		// 固定すると回転もできなくなるので、走っている自由回転を先に確定させてから固定する
+		// 固定すると回転もできなくなるので、回転モードを抜けて（走っている自由回転を確定させて）から固定する
 		// （main.ts の onToggleLock が exitRotateMode を通すのと同じ順）
 		if (PlayerController != nullptr)
 		{
-			PlayerController->CommitFreeRotation();
+			PlayerController->ExitRotateMode();
 		}
 
 		Game->Lock(PieceId, Cubelith::ELockKind::Manual);
@@ -369,6 +390,8 @@ void ACubelithGameMode::ToggleLock(int32 PieceId)
 	{
 		PlayerController->RefreshSnapHint();
 	}
+	// 固定のラベル（固定 / 固定解除）と回転モードのトグルを押せるかが変わる（RULES.md 6 章）
+	RefreshHud();
 
 	UE_LOG(LogCubelith, Log, TEXT("ピース %d を%s（RULES.md 3.3）"),
 		PieceId, (Action == Cubelith::ELockToggleAction::Lock) ? TEXT("手動で固定した") : TEXT("固定解除した"));
@@ -425,6 +448,9 @@ void ACubelithGameMode::UseHint()
 	{
 		PlayerController->RefreshSnapHint();
 	}
+	// ヒントを使うと未固定が 1 つ減る ＝ ボタンが使えなくなることがある（RULES.md 3.7）。
+	// 選択中のピースをヒントで固定したときは「固定解除」も押せなくなる（RULES.md 6 章）
+	RefreshHud();
 
 	UE_LOG(LogCubelith, Log,
 		TEXT("ヒントでピース %d を解答へ送って固定した: 向き %d, 位置 (%d, %d, %d)（RULES.md 3.7）"),
@@ -451,8 +477,8 @@ void ACubelithGameMode::ScatterAgain()
 	ACubelithPlayerController* const PlayerController = GetCubelithPlayerController();
 	if (PlayerController != nullptr)
 	{
-		// 散らす前に表示上のねじれを片付ける（main.ts の onReset が exitRotateMode を通すのと同じ）
-		PlayerController->CommitFreeRotation();
+		// 散らす前に回転モードを抜けて表示上のねじれを片付ける（main.ts の onReset と同じ）
+		PlayerController->ExitRotateMode();
 		// ピースの選択も外れる（RULES.md 3.3「やり直し」）
 		PlayerController->SetSelectedPiece(INDEX_NONE);
 		// 走っているスナップの補間はすべて打ち切る（散らした先から表示だけが元へ戻っていかないように）
@@ -475,9 +501,84 @@ void ACubelithGameMode::ScatterAgain()
 
 	// 手動の固定が解けた分の鍵アイコンは配置の変化では分からないので、ここで揃え直す
 	RefreshLockIcons();
+	// 選択が外れ固定も解けたので HUD も揃える（Reset の OnChange では固定の解除が反映済みか見えない）
+	RefreshHud();
 
 	UE_LOG(LogCubelith, Log, TEXT("散らし直した: seed=%u, ヒントで残したピース=%d 個（RULES.md 3.3）"),
 		SessionPuzzle.Seed, ScatterOptions.Keep.Num());
+}
+
+void ACubelithGameMode::RefreshHud()
+{
+	// HUD を出していない（タイトル / クリア）ときは何もしない。呼ぶ側が画面を気にしなくてよいように、
+	// 判定はここ 1 か所に集める
+	UCubelithHudWidget* const Hud = Cast<UCubelithHudWidget>(ActiveWidget.Get());
+	if (Hud == nullptr || !Game.IsValid())
+	{
+		return;
+	}
+
+	const ACubelithPlayerController* const PlayerController = GetCubelithPlayerController();
+	const int32 SelectedPieceId =
+		(PlayerController != nullptr) ? PlayerController->GetSelectedPieceId() : INDEX_NONE;
+
+	// 順番は Web 版 main.ts と同じ（選択 → 固定 → 回転モード）。選択を差し替えると固定と回転モードは
+	// 一旦初期値へ戻るので、その後に今の値を流し込む
+	Hud->SetSelected(SelectedPieceId);
+	Hud->SetLock((SelectedPieceId != INDEX_NONE)
+		? Game->LockKindOf(SelectedPieceId) : TOptional<Cubelith::ELockKind>());
+	Hud->SetRotateMode((PlayerController != nullptr) && PlayerController->IsRotateModeOn());
+
+	// 残りピース数（RULES.md 6 章）。数え方は CubelithProgress.h の「解釈:」
+	Hud->SetRemaining(
+		Cubelith::UnsettledPieceCount(Game->Pieces(), Game->Placements(), Game->N()),
+		Game->Pieces().Num());
+
+	Hud->SetHintEnabled(IsHintAvailable());
+}
+
+void ACubelithGameMode::BindHud(UCubelithHudWidget& Hud)
+{
+	// 押されたことだけを受け取り、盤面を触るのはこの GameMode（Docs/SPEC_UE.md 4 章の「画面（UI）」）
+	Hud.OnToggleRotateMode.BindUObject(this, &ACubelithGameMode::HandleHudToggleRotateMode);
+	Hud.OnToggleLock.BindUObject(this, &ACubelithGameMode::HandleHudToggleLock);
+	Hud.OnScatterAgain.BindUObject(this, &ACubelithGameMode::ScatterAgain);
+	Hud.OnHint.BindUObject(this, &ACubelithGameMode::UseHint);
+	// 「次の問題」は難易度はそのままシードだけ引き直す、「難易度へ戻る」はタイトルへ戻る（RULES.md 2 章）
+	Hud.OnNext.BindUObject(this, &ACubelithGameMode::RestartWithNewSeed);
+	Hud.OnBackToTitle.BindUObject(this, &ACubelithGameMode::ReturnToTitle);
+}
+
+void ACubelithGameMode::HandleHudToggleLock()
+{
+	ACubelithPlayerController* const PlayerController = GetCubelithPlayerController();
+	if (PlayerController == nullptr)
+	{
+		return;
+	}
+
+	// 対象は選択中のピース（HUD はピースを選んでいるときだけこのボタンを出す。RULES.md 6 章）
+	const int32 PieceId = PlayerController->GetSelectedPieceId();
+	if (PieceId == INDEX_NONE)
+	{
+		return;
+	}
+
+	ToggleLock(PieceId);
+}
+
+void ACubelithGameMode::HandleHudToggleRotateMode()
+{
+	ACubelithPlayerController* const PlayerController = GetCubelithPlayerController();
+	if (PlayerController == nullptr)
+	{
+		return;
+	}
+
+	// 入れる / 抜けるを決めるのはコントローラ（選択が無い / 固定中 / 回転「なし」では入らない）。
+	// その結果を HUD のラベルへ返す（main.ts の onToggleRotateMode と同じ形）
+	PlayerController->ToggleRotateMode();
+	RefreshHud();
 }
 
 void ACubelithGameMode::RefreshLockIcons()
@@ -789,6 +890,13 @@ void ACubelithGameMode::UpdateSolvedDisplay(bool bSolved)
 
 	if (bSolved)
 	{
+		// クリアした形が歪んで見えないよう、回転モードを抜けて表示だけのねじれを解く
+		// （main.ts の showClear が exitRotateMode を通すのと同じ）
+		if (ACubelithPlayerController* const PlayerController = GetCubelithPlayerController())
+		{
+			PlayerController->ExitRotateMode();
+		}
+
 		UE_LOG(LogCubelith, Log,
 			TEXT("クリア: 全ピースが N×N×N のどこかに重なりなく収まった（RULES.md 3.4）"));
 		// 次の Tick を待たずに出す（判定の直後に見えるように）

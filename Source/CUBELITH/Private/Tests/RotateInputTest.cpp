@@ -265,7 +265,7 @@ bool FCubelithRotateInputTrackballScreenTest::RunTest(const FString& Parameters)
 }
 
 // 6. 90 度ぶんのドラッグは、2 本指の同じ向きのジェスチャと同じ向き id へ落ちる
-//    （右ボタンのドラッグと 2 本指スワイプで「同じ方向に回る」ことの保証）
+//    （回転モードのドラッグと 2 本指スワイプで「同じ方向に回る」ことの保証）
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCubelithRotateInputTrackballSnapTest, "CUBELITH.Render.RotateInput.TrackballSnap",
 	EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::ProductFilter)
 

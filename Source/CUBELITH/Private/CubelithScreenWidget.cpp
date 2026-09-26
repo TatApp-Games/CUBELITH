@@ -85,12 +85,24 @@ bool UCubelithScreenWidget::HasAuthoredLayout() const
 
 UVerticalBox* UCubelithScreenWidget::ConstructCenteredPanelRoot()
 {
+	return ConstructPanelRoot(HAlign_Center, VAlign_Center);
+}
+
+UVerticalBox* UCubelithScreenWidget::ConstructBottomPanelRoot()
+{
+	// 横は画面幅いっぱい（HAlign_Fill）にして下端へ寄せる（RULES.md 6 章の「HUD を画面下部に寄せ」）
+	return ConstructPanelRoot(HAlign_Fill, VAlign_Bottom);
+}
+
+UVerticalBox* UCubelithScreenWidget::ConstructPanelRoot(
+	EHorizontalAlignment HorizontalAlignment, EVerticalAlignment VerticalAlignment)
+{
 	if (WidgetTree == nullptr)
 	{
 		return nullptr;
 	}
 
-	// Overlay を根にするのは、縦横の中央寄せを 1 つのスロットで指定できるため
+	// Overlay を根にするのは、縦横の寄せ方を 1 つのスロットで指定できるため
 	// （VerticalBox を根にすると画面の上端に貼り付く）
 	UOverlay* const Root = WidgetTree->ConstructWidget<UOverlay>(UOverlay::StaticClass(), TEXT("ScreenRoot"));
 	UBorder* const Panel = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass(), TEXT("ScreenPanel"));
@@ -99,8 +111,8 @@ UVerticalBox* UCubelithScreenWidget::ConstructCenteredPanelRoot()
 
 	if (UOverlaySlot* const PanelSlot = Cast<UOverlaySlot>(Root->AddChild(Panel)))
 	{
-		PanelSlot->SetHorizontalAlignment(HAlign_Center);
-		PanelSlot->SetVerticalAlignment(VAlign_Center);
+		PanelSlot->SetHorizontalAlignment(HorizontalAlignment);
+		PanelSlot->SetVerticalAlignment(VerticalAlignment);
 	}
 
 	UVerticalBox* const Stack = WidgetTree->ConstructWidget<UVerticalBox>(UVerticalBox::StaticClass(), TEXT("ScreenStack"));
@@ -220,6 +232,61 @@ void UCubelithScreenWidget::SetButtonSelected(UButton* Button, bool bSelected)
 
 	// 仮の見せ方なので色だけ（widgets.ts の setSelected が class を付け替えるのと同じ役目）
 	Button->SetBackgroundColor(bSelected ? ButtonColorSelected : ButtonColorNormal);
+}
+
+void UCubelithScreenWidget::SetButtonLabel(UButton* Button, const FText& Label)
+{
+	if (Button == nullptr)
+	{
+		return;
+	}
+
+	// ConstructButton が入れるラベルは最初の子の UTextBlock。人のレイアウトで別の作りに
+	// なっていれば何もしない（SetTextSafe と同じ「無ければ触らない」扱い）
+	SetTextSafe(Cast<UTextBlock>(Button->GetChildAt(0)), Label);
+}
+
+void UCubelithScreenWidget::SetButtonVisible(UButton* Button, bool bVisible) const
+{
+	if (Button == nullptr)
+	{
+		return;
+	}
+
+	// 仮の画面では ConstructButton が USizeBox で包んでいるので、その入れ物ごと隠す
+	// （ボタンだけ隠すと 44 px の空きが残る）。人のレイアウトでは入れ物に何が入っているか
+	// 分からないのでボタンだけを隠す
+	UWidget* Target = Button;
+	if (!bAuthoredLayout)
+	{
+		if (USizeBox* const SizeBox = Cast<USizeBox>(Button->GetParent()))
+		{
+			Target = SizeBox;
+		}
+	}
+
+	SetWidgetVisible(Target, bVisible);
+}
+
+void UCubelithScreenWidget::SetWidgetVisible(UWidget* Widget, bool bVisible)
+{
+	if (Widget == nullptr)
+	{
+		return;
+	}
+
+	if (!bVisible)
+	{
+		// 隠すときは場所も取らせない（Hidden は場所を残す）
+		Widget->SetVisibility(ESlateVisibility::Collapsed);
+		return;
+	}
+
+	// 解釈: 出すときの値は部品のクラスの既定に戻す。UMG の既定は入れ物（UHorizontalBox など）が
+	// SelfHitTestInvisible、押せる部品（UButton）が Visible なので、一律 Visible に戻すと
+	// 入れ物がクリックを吸うようになってしまう
+	const UWidget* const Defaults = Widget->GetClass()->GetDefaultObject<UWidget>();
+	Widget->SetVisibility((Defaults != nullptr) ? Defaults->GetVisibility() : ESlateVisibility::Visible);
 }
 
 void UCubelithScreenWidget::SetTextSafe(UTextBlock* TextBlock, const FText& Text)

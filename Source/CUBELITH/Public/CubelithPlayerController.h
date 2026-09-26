@@ -4,10 +4,16 @@
 // 何も無い場所を押しても選択は外さない（RULES.md 3.3。外れるのは「散らし直す」など外からの解除だけで、それは U4）。
 //
 // ドラッグは押した瞬間に役割が決まり、離すまで変わらない:
-//   ピースを押した      → そのピースをカメラの向きに応じた 2 軸へボクセル単位で動かす（軌道カメラの旋回は止める）
-//   何も無い場所        → 選択は保ったままカメラを旋回させる（ACubelithOrbitPawn::bOrbitEnabled を戻す）
-//   右ボタン（マウス）  → 選択中のピースを 90 度に縛らず回して見せ、離した時点で最寄りの向きへ確定させる
+//   ピースを押した        → そのピースをカメラの向きに応じた 2 軸へボクセル単位で動かす（軌道カメラの旋回は止める）
+//   何も無い場所          → 選択は保ったままカメラを旋回させる（ACubelithOrbitPawn::bOrbitEnabled を戻す）
+//   回転モード中にピース  → 選択中のピースを 90 度に縛らず回して見せ、離した時点で最寄りの向きへ確定させる
 // ホイールのズームは選択の有無によらず効く（ACubelithOrbitPawn が受け持つ）。
+//
+// 回転モード（RULES.md 3.3 の「回転モードのドラッグ」）は HUD のトグル（RULES.md 6 章）で出入りする。
+// オンの間は選択中のピースへのドラッグが移動ではなく自由回転になり、離すと最寄りの向きで確定する。
+// 入れるかどうかを決めるのはこちら（選択が無い / 固定中のピース / パズルの回転「なし」では入らない）で、
+// その結果を HUD のラベルへ返す（Web 版 main.ts の onToggleRotateMode と同じ形）。
+// マウスでも指でも同じように働く（U3 にあったマウスの右ボタン専用の自由回転は、この回転モードに置き換えた）。
 //
 // 2 本指（タッチ）は、パズルの回転「あり」でピースを選んでいる間だけこのコントローラが乗っ取り、
 // Cubelith::FTwoFingerGesture に通して「90 度回転」か「ピンチのズーム」に振り分ける。
@@ -19,7 +25,9 @@
 // Cubelith::FSnapMotion）。候補がある間の薄い発光は ACubelithPuzzleActor::SetSnapHint（RULES.md 5.1）、
 // 吸着した瞬間の効果音は ACubelithGameMode::PlaySnapSound へ回す。
 //
-// HUD の回転モードのトグルと回転ギズモは後続タスク（マウスの右ボタンはそこまでの仮の手段）。
+// 解釈: RULES.md 3.3 は回転の手段として「2 本指スワイプ / ひねり、回転モードのドラッグ、または
+// 回転ギズモ」を挙げているが、**回転ギズモは作らない**（要望が置き換えを求めているのは
+// 「マウスで回転を確かめる仮の手段 → HUD の回転モードのトグル」だけ）。足すかは後の段階で人が決める。
 
 #pragma once
 
@@ -60,7 +68,7 @@ enum class ECubelithDragMode : uint8
 	OrbitCamera,
 
 	/**
-	 * 選択中のピースを自由回転させている（マウスの右ボタン。90 度に縛らず見せるだけで、
+	 * 選択中のピースを自由回転させている（回転モード中のドラッグ。90 度に縛らず見せるだけで、
 	 * 離した時点で最寄りの向きへ確定させる。pieceInput.ts の RotateDrag に当たる）
 	 */
 	RotatePiece,
@@ -111,6 +119,27 @@ public:
 	 * ACubelithGameMode がそれらの操作の入口で呼ぶ（main.ts の exitRotateMode に当たる）
 	 */
 	void CommitFreeRotation();
+
+	/** 回転モード（RULES.md 3.3 の「回転モードのドラッグ」）が入っているか。HUD のラベルに使う */
+	bool IsRotateModeOn() const { return bRotateModeOn; }
+
+	/**
+	 * 回転モードを入れる / 抜ける（HUD のトグルから呼ぶ。pieceInput.ts の setRotateMode）。
+	 *
+	 * **入れるかどうかはここで決める**: 選択が無い・固定中のピース・パズルの回転「なし」では入らない。
+	 * 抜けるときは走っている自由回転を確定させて表示だけのねじれを解く（U3 の CommitRotateDrag を通す）。
+	 * 戻り値は結果の状態（呼び出し側がそのまま HUD のラベルへ返す。main.ts の onToggleRotateMode と同じ形）
+	 */
+	bool SetRotateMode(bool bEnabled);
+
+	/** 回転モードを切り替える（HUD の「回転 / 回転解除」。戻り値は結果の状態） */
+	bool ToggleRotateMode();
+
+	/**
+	 * 回転モードを抜ける（入っていなければ表示のねじれを解くだけ）。
+	 * 固定・ヒント・散らし直し・クリアのときに ACubelithGameMode が呼ぶ（main.ts の exitRotateMode）
+	 */
+	void ExitRotateMode();
 
 	/**
 	 * そのピースに走っているスナップの補間を打ち切る（RULES.md 3.5 の見た目の追いつき）。
@@ -174,7 +203,7 @@ public:
 	double MaxPixelsPerVoxel = 160.0;
 
 	/**
-	 * 右ボタンのドラッグでピースを回す感度（ドラッグ 1 px あたりの回転角・度）。
+	 * 回転モード中のドラッグでピースを回す感度（ドラッグ 1 px あたりの回転角・度）。
 	 * 既定は pieceInput.ts の ROTATE_DEGREES_PER_PIXEL（90 度回すのに 225 px）
 	 */
 	UPROPERTY(EditAnywhere, Category = "Cubelith|Input", meta = (ClampMin = "0.0"))
@@ -236,17 +265,17 @@ private:
 	void EnsureSnapControl();
 
 	/**
-	 * 右ボタンを押した瞬間の処理（マウスで回転を確かめる仮の手段）。
-	 * 選択中で固定していないピースがあり、パズルの回転が「あり」なら自由回転を始める。
-	 * 始められない理由はそのまま LogCubelith に出す（人がエディタで確かめるときの手がかり）
+	 * 回転モード中に選択中のピースを押したときのドラッグを始める（pieceInput.ts の rotate のドラッグ）。
+	 * 呼ぶ前に「回転モードが入っている・そのピースが選択中で固定されていない」ことは済んでいる
+	 * （回転モードに入る条件がそれを含む）。配置が取れなければ始めない
 	 */
-	void HandleRotatePressed(const FVector2D& ScreenPosition);
+	void BeginRotateDrag(int32 PieceId, const FVector2D& ScreenPosition);
 
 	/**
-	 * 右ボタンを押したまま動かしたときの処理。開始位置からの移動量で作り直した回転を
+	 * 回転モード中に押したまま動かしたときの処理。開始位置からの移動量で作り直した回転を
 	 * ACubelithPuzzleActor::SetFreeRotation に流して見せるだけで、論理上の配置は変えない
 	 */
-	void HandleRotateMoved(const FVector2D& ScreenPosition);
+	void UpdateRotateDrag(const FVector2D& ScreenPosition);
 
 	/**
 	 * 走っている自由回転を最寄りの向きへ確定させる（pieceInput.ts の commitRotateDrag）。
@@ -264,7 +293,7 @@ private:
 
 	/**
 	 * この盤面でパズルの回転が「あり」か（RULES.md 3.1）。ACubelithGameMode が決めた値を読む。
-	 * 「なし」なら 2 本指の 90 度回転も右ボタンの自由回転も行わない（ピンチのズームだけが残る）
+	 * 「なし」なら 2 本指の 90 度回転も回転モードも使えない（ピンチのズームだけが残る）
 	 */
 	bool IsRotationAllowed() const;
 
@@ -336,7 +365,13 @@ private:
 	/** 前フレームの押下状態（ポーリングなので立ち上がりを自分で見る） */
 	bool bWasTouchDown = false;
 	bool bWasMouseDown = false;
-	bool bWasRightMouseDown = false;
+
+	/**
+	 * 回転モードが入っているか（pieceInput.ts の rotateModeOn）。オンの間は選択中のピースへの
+	 * ドラッグが自由回転になる。固定したピースを選んでいる間はフラグが立っていても効かない
+	 * （ドラッグを始めるときに固定を見る。hud.ts の render もそのときラベルを「回転」へ戻す）
+	 */
+	bool bRotateModeOn = false;
 
 	/** 2 本指ジェスチャの状態機械（ピンチか 90 度回転かを判定する。移植元 twoFingerGesture.ts） */
 	Cubelith::FTwoFingerGesture Gesture;

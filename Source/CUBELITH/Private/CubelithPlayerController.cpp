@@ -146,7 +146,7 @@ void ACubelithPlayerController::PollPointer()
 	{
 		if (!bTwoFingerActive)
 		{
-			// 走っているドラッグは畳む（右ボタンの自由回転はその場で確定させる。commitRotateDrag と同じ）。
+			// 走っているドラッグは畳む（回転モードの自由回転はその場で確定させる。commitRotateDrag と同じ）。
 			// 何も無い場所から始めたカメラの旋回も、ここで「選択中は止める」状態へ戻る
 			EndDrag();
 
@@ -198,10 +198,9 @@ void ACubelithPlayerController::PollPointer()
 	}
 	bWasTouchDown = bTouch1Down;
 
+	// マウスは左ボタンだけを見る（回転は回転モード中の同じドラッグで行う。U3 で仮に使っていた
+	// 右ボタンのドラッグは HUD の回転モードのトグルへ置き換えたので、右ボタンには何も紐づかない）
 	const bool bMouseDown = IsInputKeyDown(EKeys::LeftMouseButton);
-	// 右ボタンは「選択中のピースを回す」仮の手段（HUD の回転モードのトグルと回転ギズモは U4）。
-	// カメラの旋回は左ボタンだけを見ている（ACubelithOrbitPawn::PollInput）ので、右ボタンでカメラは回らない
-	const bool bRightMouseDown = IsInputKeyDown(EKeys::RightMouseButton);
 
 	// タッチが左クリックとしても流れてくる環境（Use Mouse for Touch）で二重に拾わない
 	// （ACubelithOrbitPawn::PollInput が旋回で同じ手当てをしているのと同じ理由）
@@ -231,32 +230,9 @@ void ACubelithPlayerController::PollPointer()
 		{
 			HandlePointerReleased();
 		}
-
-		if (bRightMouseDown && !bWasRightMouseDown)
-		{
-			if (bHasMousePosition)
-			{
-				HandleRotatePressed(MousePosition);
-			}
-		}
-		else if (bRightMouseDown && bWasRightMouseDown)
-		{
-			if (bHasMousePosition)
-			{
-				HandleRotateMoved(MousePosition);
-			}
-		}
-	}
-
-	// 右ボタンを離したら必ず確定させる。上の分岐の外に出しておくのは、タッチが割り込んだフレームでも
-	// 表示だけねじれたピースを残さないため（pieceInput.ts の commitRotateDrag と同じ役目）
-	if (!bRightMouseDown && bWasRightMouseDown)
-	{
-		CommitRotateDrag();
 	}
 
 	bWasMouseDown = bMouseDown;
-	bWasRightMouseDown = bRightMouseDown;
 }
 
 void ACubelithPlayerController::HandlePointerPressed(const FVector2D& ScreenPosition, bool bTouch)
@@ -289,11 +265,26 @@ void ACubelithPlayerController::HandlePointerPressed(const FVector2D& ScreenPosi
 		return;
 	}
 
+	if (bRotateModeOn)
+	{
+		// 回転モード中のドラッグは移動ではなく自由回転（RULES.md 3.3）。別のピースを掴んだなら
+		// 直前の SetSelectedPiece が回転モードを抜けているので、ここには来ない
+		BeginRotateDrag(PieceId, ScreenPosition);
+		return;
+	}
+
 	BeginMoveDrag(PieceId, ScreenPosition);
 }
 
 void ACubelithPlayerController::HandlePointerMoved(const FVector2D& ScreenPosition)
 {
+	if (DragMode == ECubelithDragMode::RotatePiece)
+	{
+		// 回転モード中のドラッグ（90 度に縛らず見せるだけ。確定は離した時点）
+		UpdateRotateDrag(ScreenPosition);
+		return;
+	}
+
 	if (DragMode != ECubelithDragMode::MovePiece)
 	{
 		// カメラの旋回は ACubelithOrbitPawn が自分で入力を読む。ここでは何もしない
@@ -340,7 +331,7 @@ void ACubelithPlayerController::HandlePointerMoved(const FVector2D& ScreenPositi
 void ACubelithPlayerController::HandlePointerReleased()
 {
 	// 吸着させるのは「そのピースを動かしていたドラッグ」だけ。カメラの旋回では何も吸い付かず、
-	// 右ボタンの自由回転は EndDrag の中で向きの確定に回る（pieceInput.ts が回転のときは
+	// 回転モード中のドラッグは EndDrag の中で向きの確定に回る（pieceInput.ts が回転のときは
 	// onRelease を呼ばないのと同じ）。EndDrag が状態を畳むので、先に控えておく
 	const int32 ReleasedPieceId = (DragMode == ECubelithDragMode::MovePiece) ? DragPieceId : INDEX_NONE;
 
@@ -506,12 +497,13 @@ void ACubelithPlayerController::ResetForNewSession()
 	DragAppliedUp = 0;
 	FreeRotationQuat = FQuat::Identity;
 	bTwoFingerActive = false;
+	// 回転モードは選んでいたピースに紐づくので、盤面が入れ替わるときに落とす
+	bRotateModeOn = false;
 
 	// ポーリング入力の「前フレームの押下状態」も戻す（画面が切り替わった直後に
 	// 押しっぱなしの指 / ボタンを立ち上がりとして拾わないように）
 	bWasTouchDown = false;
 	bWasMouseDown = false;
-	bWasRightMouseDown = false;
 
 	SelectedPieceId = INDEX_NONE;
 
@@ -612,52 +604,69 @@ void ACubelithPlayerController::EndDrag()
 	UpdateOrbitEnabled();
 }
 
-void ACubelithPlayerController::HandleRotatePressed(const FVector2D& ScreenPosition)
+bool ACubelithPlayerController::SetRotateMode(bool bEnabled)
 {
-	if (DragMode != ECubelithDragMode::None)
+	// 入れる条件（pieceInput.ts の setRotateMode）: パズルの回転「あり」・ピースを選んでいる・
+	// そのピースが固定されていない。どれかが欠ければ入らない（入れたかは戻り値で分かる）
+	const bool bNext = bEnabled
+		&& IsRotationAllowed()
+		&& SelectedPieceId != INDEX_NONE
+		&& !IsPieceLocked(SelectedPieceId);
+
+	if (bNext == bRotateModeOn)
 	{
-		// 左ボタンのドラッグが走っている。役割は先に押したポインタで決まるので、右ボタンでは何も始めない
-		return;
+		if (bEnabled && !bNext)
+		{
+			// 入れなかった理由を出す（HUD はボタンを隠す / 押せなくするが、経路を追えるようにしておく）
+			UE_LOG(LogCubelith, Log,
+				TEXT("回転モードに入れない（パズルの回転=%s, 選択=%d, 固定=%s。RULES.md 3.1 / 3.3）"),
+				IsRotationAllowed() ? TEXT("あり") : TEXT("なし"), SelectedPieceId,
+				(SelectedPieceId != INDEX_NONE && IsPieceLocked(SelectedPieceId)) ? TEXT("あり") : TEXT("なし"));
+		}
+		return bRotateModeOn;
 	}
 
-	// 弾いた理由はそのままログに出す。仮の手段なので、人がエディタで「なぜ回らないのか」を追えるようにしておく
-	if (!IsRotationAllowed())
-	{
-		UE_LOG(LogCubelith, Log,
-			TEXT("パズルの回転が「なし」なので回せない（RULES.md 3.1。回転ありの盤面は ?rot=1 / -CubelithRotation=1 で開く）"));
-		return;
-	}
+	// 抜けるときに回転のドラッグが残っていたら、そこまでの回転を確定させる
+	// （表示だけねじれたピースを残さない。掛かっていなければ CommitRotateDrag が自分で弾く）
+	CommitRotateDrag();
 
-	if (SelectedPieceId == INDEX_NONE)
-	{
-		UE_LOG(LogCubelith, Log, TEXT("右ボタンのドラッグは選択中のピースを回す操作。ピースを選んでいないので何もしない"));
-		return;
-	}
+	bRotateModeOn = bNext;
 
-	if (IsPieceLocked(SelectedPieceId))
-	{
-		UE_LOG(LogCubelith, Log, TEXT("ピース %d は固定中なので回せない（RULES.md 3.3「固定」）"), SelectedPieceId);
-		return;
-	}
+	UE_LOG(LogCubelith, Log, TEXT("回転モードを%s（ピース %d。RULES.md 3.3）"),
+		bRotateModeOn ? TEXT("入れた") : TEXT("抜けた"), SelectedPieceId);
 
+	return bRotateModeOn;
+}
+
+bool ACubelithPlayerController::ToggleRotateMode()
+{
+	return SetRotateMode(!bRotateModeOn);
+}
+
+void ACubelithPlayerController::ExitRotateMode()
+{
+	// 入っていなくても CommitRotateDrag は通す（表示だけのねじれを必ず解く）
+	SetRotateMode(false);
+	CommitRotateDrag();
+}
+
+void ACubelithPlayerController::BeginRotateDrag(int32 PieceId, const FVector2D& ScreenPosition)
+{
 	const Cubelith::FGame* Game = GetGame();
-	if (Game == nullptr || Game->PlacementOf(SelectedPieceId) == nullptr)
+	if (Game == nullptr || Game->PlacementOf(PieceId) == nullptr)
 	{
-		UE_LOG(LogCubelith, Warning, TEXT("ピース %d の配置が取れないので回せない"), SelectedPieceId);
+		UE_LOG(LogCubelith, Warning, TEXT("ピース %d の配置が取れないので回せない"), PieceId);
 		return;
 	}
 
 	DragMode = ECubelithDragMode::RotatePiece;
-	DragPieceId = SelectedPieceId;
+	DragPieceId = PieceId;
 	DragStartScreenPosition = ScreenPosition;
 	// 開始時の姿勢は毎回恒等。ドラッグ量からその都度作り直すので、往復させても誤差が溜まらない
 	FreeRotationQuat = FQuat::Identity;
-
-	UE_LOG(LogCubelith, Log,
-		TEXT("ピース %d の自由回転を始めた（右ボタンのドラッグ。離すと最寄りの 90 度の向きへ確定する）"), DragPieceId);
 }
 
-void ACubelithPlayerController::HandleRotateMoved(const FVector2D& ScreenPosition)
+void ACubelithPlayerController::UpdateRotateDrag(const FVector2D& ScreenPosition)
 {
 	if (DragMode != ECubelithDragMode::RotatePiece)
 	{
@@ -737,7 +746,7 @@ void ACubelithPlayerController::CommitRotateDrag()
 	}
 
 	Game->Place(PieceId, NextOrientation, Position);
-	UE_LOG(LogCubelith, Log, TEXT("ピース %d を回した: 向き %d → %d（右ボタンのドラッグを離して確定）"),
+	UE_LOG(LogCubelith, Log, TEXT("ピース %d を回した: 向き %d → %d（回転モードのドラッグを離して確定）"),
 		PieceId, PreviousOrientation, NextOrientation);
 
 	// 向きが変わればスナップ候補も変わる（Place の OnChange で既に計算し直されているが、
@@ -761,6 +770,13 @@ void ACubelithPlayerController::ApplyTwoFinger(const FVector2D& First, const FVe
 		{
 			OrbitPawn->PinchZoomBy(Action.Scale);
 		}
+		return;
+	}
+
+	// 回転モード中は 2 本指の 90 度回転を行わない（回転はモード中のドラッグへ一本化する。
+	// pieceInput.ts の applyTwoFinger と同じ。ズームは上の分岐でどちらでも効く）
+	if (bRotateModeOn)
+	{
 		return;
 	}
 
@@ -950,6 +966,10 @@ void ACubelithPlayerController::SetSelectedPiece(int32 PieceId)
 	// pieceInput.ts の setSelected が commitRotateDrag を通してから選択を差し替えるのと同じ）
 	CommitRotateDrag();
 
+	// 選択が変わったら回転モードも抜ける（同じく pieceInput.ts の setSelected）。
+	// HUD のラベルは下の RefreshHud で「回転」へ戻る
+	bRotateModeOn = false;
+
 	SelectedPieceId = PieceId;
 
 	// 見た目（前の選択を元の色へ戻す・新しい選択を強調する）はピースを描くアクタが受け持つ
@@ -963,6 +983,13 @@ void ACubelithPlayerController::SetSelectedPiece(int32 PieceId)
 
 	// 候補は選択中のピースについてだけ出す（main.ts の onSelectionChange が snap.refresh を呼ぶのと同じ場所）
 	RefreshSnapHint();
+
+	// HUD は選択でボタンを出す / 隠す（RULES.md 6 章）。画面を持っているのは ACubelithGameMode なので
+	// そこへ知らせる（main.ts の onSelectionChange が hud.setSelected / setLock を呼ぶのに当たる）
+	if (ACubelithGameMode* const GameMode = GetCubelithGameMode())
+	{
+		GameMode->RefreshHud();
+	}
 
 	if (PieceId == INDEX_NONE)
 	{

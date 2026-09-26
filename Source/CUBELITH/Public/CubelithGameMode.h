@@ -18,6 +18,7 @@
 
 class ACubelithPlayerController;
 class ACubelithPuzzleActor;
+class UCubelithHudWidget;
 class UCubelithScreenWidget;
 class USoundBase;
 struct FCubelithTitleSelection;
@@ -40,7 +41,7 @@ enum class ECubelithScreen : uint8
 	None,
 	/** タイトル / 難易度選択（RULES.md 6 章） */
 	Title,
-	/** プレイ中（HUD は後続タスク） */
+	/** プレイ中（HUD。RULES.md 6 章） */
 	Play,
 	/** クリア（後続タスク） */
 	Clear,
@@ -62,7 +63,8 @@ enum class ECubelithScreen : uint8
  * セッションの作り直しを同じ場所で行えると順序の取り違えが起きないため。人が UMG を作ったときに
  * 差し替える口（下の TSubclassOf）も、効果音（SnapSound）と同じ「GameMode の Blueprint 派生」に集まる。
  *
- * PlayerController は ACubelithPlayerController（ピースの選択。U3）、HUD は既定のまま使う。
+ * PlayerController は ACubelithPlayerController（ピースの選択。U3）。プレイ中 HUD は UMG の
+ * UCubelithHudWidget で、エンジンの AHUD は既定のまま使わない。
  */
 UCLASS()
 class CUBELITH_API ACubelithGameMode : public AGameModeBase
@@ -127,7 +129,7 @@ public:
 	/** 走っているセッションを畳む（画面は切り替えない）。セッションが無ければ何もしない */
 	void EndSession();
 
-	// --- 盤面の操作（HUD は後続タスクで、ここを呼ぶ）---
+	// --- 盤面の操作（プレイ中 HUD の各ボタンがここを呼ぶ）---
 
 	/**
 	 * ピースの固定を切り替える（RULES.md 3.3「固定」。Web 版 main.ts の onToggleLock）。
@@ -162,6 +164,17 @@ public:
 	 * すべて打ち切る。難易度もシードも変えないので、ヒントの固定が無ければ最初の散らしと同じ配置に戻る
 	 */
 	void ScatterAgain();
+
+	/**
+	 * プレイ中 HUD（RULES.md 6 章）の表示を今の状態のとおりに揃え直す。
+	 *
+	 * 残りピース数・選択中のピースと固定・回転モード・ヒントが使えるかをまとめて流し込む
+	 * （Web 版 main.ts の hud.setRemaining / setSelected / setLock / setRotateMode / setHintEnabled を
+	 * 1 つの経路にまとめたもの）。**差分は追わない**ので、配置が変わったとき・選択が変わったとき・
+	 * 固定の状態が変わったときにそれぞれここを呼べばよい。
+	 * HUD を出していない（タイトル / クリア）ときは何もしないので、呼ぶ側は画面を気にしなくてよい
+	 */
+	void RefreshHud();
 
 	/**
 	 * 固定の表示（鍵アイコン。RULES.md 6 章）を、今のゲーム状態のとおりに揃え直す。
@@ -228,8 +241,8 @@ public:
 	TSubclassOf<UCubelithScreenWidget> TitleWidgetClass;
 
 	/**
-	 * プレイ中の画面（HUD。RULES.md 6 章）のクラス。**後続タスクで足すので既定は空**。
-	 * 空のときは「その画面では何も出さない」= 前の画面を外すだけになる
+	 * プレイ中の画面（HUD。RULES.md 6 章）のクラス（既定は C++ の UCubelithHudWidget）。
+	 * 人が UMG のウィジェットブループリントを作ったらここを差し替える（手順は Docs/SPEC_UE.md 4 章）
 	 */
 	UPROPERTY(EditAnywhere, Category = "Cubelith|UI")
 	TSubclassOf<UCubelithScreenWidget> PlayWidgetClass;
@@ -292,6 +305,18 @@ private:
 
 	/** 「開始」が押されたとき（UCubelithTitleWidget::OnStart から呼ばれる） */
 	void HandleTitleStart(const FCubelithTitleSelection& Selection);
+
+	/** プレイ中 HUD の各ボタンを盤面の操作へ結ぶ（画面を出す前に 1 度だけ呼ぶ） */
+	void BindHud(UCubelithHudWidget& Hud);
+
+	/** HUD の「固定 / 固定解除」が押されたとき（対象は選択中のピース。選択が無ければ何もしない） */
+	void HandleHudToggleLock();
+
+	/**
+	 * HUD の回転モードのトグルが押されたとき。入れる / 抜けるを決めるのは
+	 * ACubelithPlayerController で、その結果を HUD のラベルへ返す（main.ts の onToggleRotateMode）
+	 */
+	void HandleHudToggleRotateMode();
 
 	/**
 	 * タイトルの初期選択に使う難易度を決める（Docs/SPEC_UE.md 7.7 の優先順位 + セーブ）。
