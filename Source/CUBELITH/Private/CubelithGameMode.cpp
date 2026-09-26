@@ -10,6 +10,7 @@
 #include "Misc/Parse.h"
 #include "TimerManager.h"
 
+#include "CubelithDifficulty.h"
 #include "CubelithLog.h"
 #include "CubelithOrbitPawn.h"
 #include "CubelithPlayerController.h"
@@ -30,6 +31,34 @@ namespace
 	 * エンジンや他の機能とぶつかりうるので前置きを付ける（Docs/SPEC_UE.md 7.7）
 	 */
 	const TCHAR* SeedCommandLineKey = TEXT("CubelithSeed=");
+
+	/**
+	 * 難易度のマップ URL のオプション名（`?n=4&m=8&rot=1`）。N と M は Web 版の URL クエリ
+	 * （WebMock/src/ui/params.ts の `?n=` / `?m=`）と同じ名前にしてあるので、同じ URL の一部をそのまま渡せる。
+	 * 解釈: 「パズルの回転」は Web 版の URL クエリに無い項目なので、UE 版で `?rot=` と決めた（Docs/SPEC_UE.md 7.7）
+	 */
+	const TCHAR* SpaceSizeOptionKey = TEXT("n");
+	const TCHAR* PieceCountOptionKey = TEXT("m");
+	const TCHAR* RotationOptionKey = TEXT("rot");
+
+	/**
+	 * 難易度のコマンドライン引数の前置き（`-CubelithN=4 -CubelithM=8 -CubelithRotation=1`）。
+	 * `-n=` のような一般的すぎる名前を避けるのは `-CubelithSeed=` と同じ理由（Docs/SPEC_UE.md 7.7）
+	 */
+	const TCHAR* SpaceSizeCommandLineKey = TEXT("CubelithN=");
+	const TCHAR* PieceCountCommandLineKey = TEXT("CubelithM=");
+	const TCHAR* RotationCommandLineKey = TEXT("CubelithRotation=");
+
+	/** コマンドライン引数を 1 つ読む。付いていなければ空文字（= 未指定）を返す */
+	FString ReadCommandLineValue(const TCHAR* Key)
+	{
+		FString Value;
+		if (!FParse::Value(FCommandLine::Get(), Key, Value))
+		{
+			Value.Empty();
+		}
+		return Value;
+	}
 
 	/**
 	 * TryFrameCamera の再試行の間隔（秒）と上限。上限に達したら諦めて警告を出す。
@@ -75,9 +104,13 @@ void ACubelithGameMode::InitGame(const FString& MapName, const FString& Options,
 {
 	Super::InitGame(MapName, Options, ErrorMessage);
 
-	// マップ URL（`open /Game/Maps/Main?seed=123`・起動引数のマップ指定）のオプションはここでしか受け取れない。
-	// 解釈は BeginPlay の ResolveSeed でまとめて行う。未指定なら ParseOption は空文字を返す
+	// マップ URL（`open /Game/Maps/Main?seed=123&n=4&m=8&rot=1`・起動引数のマップ指定）のオプションは
+	// ここでしか受け取れない。解釈は BeginPlay の ResolveSeed / ResolveDifficulty でまとめて行う。
+	// 未指定なら ParseOption は空文字を返す
 	SeedOptionText = UGameplayStatics::ParseOption(Options, SeedOptionKey);
+	SpaceSizeOptionText = UGameplayStatics::ParseOption(Options, SpaceSizeOptionKey);
+	PieceCountOptionText = UGameplayStatics::ParseOption(Options, PieceCountOptionKey);
+	RotationOptionText = UGameplayStatics::ParseOption(Options, RotationOptionKey);
 }
 
 void ACubelithGameMode::BeginPlay()
@@ -128,15 +161,11 @@ void ACubelithGameMode::StartPuzzle()
 		return;
 	}
 
-	// 解釈: SpaceSize / PieceCount は人がエディタで動かせるので、CUBELITHCore の checkf に落ちないよう
-	// ここで範囲に丸める（RULES.md 3.1 の N は 3..7、M は 2..MaxPieces(N)）。丸めたときは気付けるよう警告を出す
-	const int32 N = FMath::Clamp(SpaceSize, Cubelith::MinSpaceSize, Cubelith::MaxSpaceSize);
-	const int32 M = FMath::Clamp(PieceCount, Cubelith::MinPieceCount, Cubelith::MaxPieces(N));
-	if (N != SpaceSize || M != PieceCount)
-	{
-		UE_LOG(LogCubelith, Warning,
-			TEXT("難易度が範囲外なので丸めた: N=%d → %d, M=%d → %d"), SpaceSize, N, PieceCount, M);
-	}
+	// 難易度（Docs/SPEC_UE.md 7.7）。範囲外の丸めは Cubelith::ResolveDifficulty が済ませているので、
+	// ここで二重に丸めない（N は 3..7、M は RULES.md 3.1 のプリセットのどれかになっている）
+	const Cubelith::FDifficultyResolution Difficulty = ResolveDifficulty();
+	const int32 N = Difficulty.SpaceSize;
+	const int32 M = Difficulty.PieceCount;
 
 	const uint32 ResolvedSeed = ResolveSeed();
 
@@ -145,7 +174,7 @@ void ACubelithGameMode::StartPuzzle()
 
 	// 初期散らし（RULES.md 3.2-5）。ヒントで固定したピースを残す Keep は U4 で使うのでここでは空
 	Cubelith::FScatterOptions ScatterOptions;
-	ScatterOptions.bAllowRotation = bAllowRotation;
+	ScatterOptions.bAllowRotation = Difficulty.bAllowRotation;
 	const TArray<Cubelith::FPlacement> Scattered =
 		Cubelith::ScatterPlacements(Puzzle.Pieces, N, ResolvedSeed, ScatterOptions);
 
@@ -185,7 +214,7 @@ void ACubelithGameMode::StartPuzzle()
 	PuzzleActor->UpdatePlacements(Game->Placements());
 
 	UE_LOG(LogCubelith, Log, TEXT("パズルを開始した: N=%d, M=%d, パズルの回転=%s, seed=%u, ピース数=%d"),
-		N, M, bAllowRotation ? TEXT("あり") : TEXT("なし"), ResolvedSeed, Puzzle.Pieces.Num());
+		N, M, Difficulty.bAllowRotation ? TEXT("あり") : TEXT("なし"), ResolvedSeed, Puzzle.Pieces.Num());
 
 	// FGame は構築時にクリア判定を 1 回走らせるが OnChange は呼ばない。散らした直後は普通クリアではないものの、
 	// 初期状態も同じ経路に通しておく（U4 で散らし直すときに前のクリア表示が残らないようにするため）
@@ -203,11 +232,7 @@ void ACubelithGameMode::StartPuzzle()
 uint32 ACubelithGameMode::ResolveSeed()
 {
 	// コマンドライン引数 `-CubelithSeed=<0..4294967295>`。値が付いていなければ空文字のまま（= 未指定）
-	FString CommandLineText;
-	if (!FParse::Value(FCommandLine::Get(), SeedCommandLineKey, CommandLineText))
-	{
-		CommandLineText.Empty();
-	}
+	const FString CommandLineText = ReadCommandLineValue(SeedCommandLineKey);
 
 	// どれも指定が無いときのために引いておく。起動ごとに変える必要があるが、FMath::Rand は
 	// プラットフォームによって 15 bit しか返さないので、時刻で種を撒いた FRandomStream から 32 bit まるごと取る
@@ -230,6 +255,47 @@ uint32 ACubelithGameMode::ResolveSeed()
 		Cubelith::SeedSourceToText(Resolution.Source), Resolution.Seed, Resolution.Seed, Resolution.Seed);
 
 	return Resolution.Seed;
+}
+
+Cubelith::FDifficultyResolution ACubelithGameMode::ResolveDifficulty()
+{
+	const Cubelith::FDifficultyResolution Resolution = Cubelith::ResolveDifficulty(
+		SpaceSizeOptionText, PieceCountOptionText, RotationOptionText,
+		ReadCommandLineValue(SpaceSizeCommandLineKey),
+		ReadCommandLineValue(PieceCountCommandLineKey),
+		ReadCommandLineValue(RotationCommandLineKey),
+		SpaceSize, PieceCount, bAllowRotation);
+
+	// 打ち間違いに気付けるよう、読めなかった指定を 1 行にまとめて出す（シードと同じ）
+	if (Resolution.IgnoredInputs.Num() > 0)
+	{
+		UE_LOG(LogCubelith, Warning,
+			TEXT("難易度の指定が読めないので無視した: %s")
+			TEXT("（N と M は 10 進整数、パズルの回転は 1/true/on/yes か 0/false/off/no）"),
+			*FString::Join(Resolution.IgnoredInputs, TEXT("、")));
+	}
+
+	// 範囲外・プリセット外は無視ではなく丸めるので、丸めたことが分かるように別の行で出す
+	if (Resolution.AdjustedInputs.Num() > 0)
+	{
+		UE_LOG(LogCubelith, Warning,
+			TEXT("難易度の指定を有効な値へ寄せた: %s（N は %d..%d、M は N ごとの 5 段のプリセット。RULES.md 3.1）"),
+			*FString::Join(Resolution.AdjustedInputs, TEXT("、")),
+			Cubelith::MinSpaceSize, Cubelith::MaxSpaceSize);
+	}
+
+	// 人が同じ盤面を開き直せるよう、使った値と経路を必ず残す
+	UE_LOG(LogCubelith, Log,
+		TEXT("難易度を決めた: N=%d（%s）, M=%d（%s）, パズルの回転=%s（%s）")
+		TEXT("（再現するには ?n=%d&m=%d&rot=%d か -CubelithN=%d -CubelithM=%d -CubelithRotation=%d）"),
+		Resolution.SpaceSize, Cubelith::DifficultySourceToText(Resolution.SpaceSizeSource),
+		Resolution.PieceCount, Cubelith::DifficultySourceToText(Resolution.PieceCountSource),
+		Resolution.bAllowRotation ? TEXT("あり") : TEXT("なし"),
+		Cubelith::DifficultySourceToText(Resolution.RotationSource),
+		Resolution.SpaceSize, Resolution.PieceCount, Resolution.bAllowRotation ? 1 : 0,
+		Resolution.SpaceSize, Resolution.PieceCount, Resolution.bAllowRotation ? 1 : 0);
+
+	return Resolution;
 }
 
 bool ACubelithGameMode::TryFrameCamera()
