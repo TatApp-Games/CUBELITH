@@ -1,7 +1,6 @@
 #include "CubelithGameMode.h"
 
 #include "Blueprint/UserWidget.h"
-#include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
 #include "Kismet/GameplayStatics.h"
@@ -12,6 +11,7 @@
 #include "Sound/SoundBase.h"
 #include "TimerManager.h"
 
+#include "CubelithClearWidget.h"
 #include "CubelithDifficulty.h"
 #include "CubelithHudWidget.h"
 #include "CubelithLockOps.h"
@@ -79,21 +79,6 @@ namespace
 	constexpr float FrameCameraRetryIntervalSeconds = 0.01f;
 	constexpr int32 MaxFrameCameraAttempts = 300;
 
-	/**
-	 * クリアの仮表示（AddOnScreenDebugMessage）のキー。同じキーで出し直すと置き換わるので、
-	 * 毎フレーム出しても行が増えない。他の表示とぶつからないよう適当に大きな値にしてある
-	 */
-	constexpr uint64 SolvedMessageKey = 0x4355'4245'4C49'5448ull;
-
-	/**
-	 * 仮表示の寿命（秒）。Tick で毎フレーム出し直すので実際はこの秒数まで持たないが、
-	 * フレーム落ちで点滅しないよう 1 フレームより十分長くしてある
-	 */
-	constexpr float SolvedMessageSeconds = 2.0f;
-
-	/** 仮表示の文言。本実装のクリア画面は後続タスク、演出は U5（Docs/SPEC_UE.md 8 章） */
-	const TCHAR* SolvedMessageText = TEXT("クリア！ 全ピースが立方体に収まった");
-
 	/** ログに出す画面の名前 */
 	const TCHAR* ScreenToText(ECubelithScreen Screen)
 	{
@@ -109,9 +94,8 @@ namespace
 
 ACubelithGameMode::ACubelithGameMode()
 {
-	// Tick はクリアの仮表示を出し続けるためだけに使う。クリアするまでは回さない（UpdateSolvedDisplay が入れる）
-	PrimaryActorTick.bCanEverTick = true;
-	PrimaryActorTick.bStartWithTickEnabled = false;
+	// Tick は回さない（U3 でクリアの仮表示を出し続けるためだけに回していたのを、クリア画面を入れたときに外した）
+	PrimaryActorTick.bCanEverTick = false;
 
 	// マップ /Game/Maps/Main に PlayerStart が無ければ Pawn はワールド原点に湧く。軌道カメラの注視点は
 	// 立方体の中心（= パズルのアクタを置くワールド原点）なのでそれでよく、マップには手を入れない
@@ -125,6 +109,7 @@ ACubelithGameMode::ACubelithGameMode()
 	// この GameMode の Blueprint 派生でここを差し替える（Docs/SPEC_UE.md 4 章）
 	TitleWidgetClass = UCubelithTitleWidget::StaticClass();
 	PlayWidgetClass = UCubelithHudWidget::StaticClass();
+	ClearWidgetClass = UCubelithClearWidget::StaticClass();
 }
 
 void ACubelithGameMode::InitGame(const FString& MapName, const FString& Options, FString& ErrorMessage)
@@ -153,23 +138,9 @@ void ACubelithGameMode::BeginPlay()
 	ShowTitle(Difficulty.SpaceSize, Difficulty.PieceCount, Difficulty.bAllowRotation, InitialSeed);
 }
 
-void ACubelithGameMode::Tick(float DeltaSeconds)
-{
-	Super::Tick(DeltaSeconds);
-
-	if (!bSolvedShown || GEngine == nullptr)
-	{
-		return;
-	}
-
-	// 同じキーで出し直すと置き換わるので、毎フレーム出せばクリアしている間ずっと見えたままになる
-	// （1 フレームだけ出て消えると人が確認できない）
-	GEngine->AddOnScreenDebugMessage(SolvedMessageKey, SolvedMessageSeconds, FColor::Green, SolvedMessageText);
-}
-
 void ACubelithGameMode::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
-	// セッション（タイマー・ピースのアクタ・FGame・クリアの仮表示）をまとめて畳む。
+	// セッション（タイマー・ピースのアクタ・FGame・クリアの状態）をまとめて畳む。
 	// FGame の OnChange は弱参照越しなので、畳む前に呼ばれても消えた GameMode / アクタには触らない
 	EndSession();
 
@@ -277,8 +248,8 @@ void ACubelithGameMode::StartSession(int32 N, int32 M, bool bInAllowRotation, ui
 			{
 				Actor->UpdatePlacements(Placements);
 			}
-			// クリア判定は FGame が更新のたびに走らせている（RULES.md 3.4）。ここは結果を見せるだけ
-			Self->UpdateSolvedDisplay(bSolved);
+			// クリア判定は FGame が更新のたびに走らせている（RULES.md 3.4）。ここは結果を受け取るだけ
+			Self->HandleSolvedChanged(bSolved);
 			// 操作側（ACubelithPlayerController）へ中継する。スナップ候補の発光を計算し直すきっかけ
 			// （RULES.md 5.1。毎フレームは回さず、配置が変わったこのタイミングだけで見る）
 			Self->OnPlacementsChanged.Broadcast(Placements);
@@ -306,34 +277,35 @@ void ACubelithGameMode::StartSession(int32 N, int32 M, bool bInAllowRotation, ui
 	UE_LOG(LogCubelith, Log, TEXT("パズルを開始した: N=%d, M=%d, パズルの回転=%s, seed=%u, ピース数=%d"),
 		SessionN, SessionM, bInAllowRotation ? TEXT("あり") : TEXT("なし"), InSeed, SessionPuzzle.Pieces.Num());
 
-	// FGame は構築時にクリア判定を 1 回走らせるが OnChange は呼ばない。散らした直後は普通クリアではないものの、
-	// 初期状態も同じ経路に通しておく（前のセッションのクリア表示が残らないようにするため）
-	UpdateSolvedDisplay(Game->Solved());
-
 	// 軌道カメラの距離合わせはセッションを作るたびに掛け直す（N が変われば収める大きさも変わる）
 	StartFrameCamera();
 
 	// プレイ中の画面（HUD。RULES.md 6 章）へ
 	if (UCubelithScreenWidget* const Widget = BeginScreen(ECubelithScreen::Play))
 	{
-		UCubelithHudWidget* const Hud = Cast<UCubelithHudWidget>(Widget);
-		if (Hud == nullptr)
+		if (UCubelithHudWidget* const Hud = Cast<UCubelithHudWidget>(Widget))
+		{
+			BindHud(*Hud);
+			// 回転モードのトグルを出すかは難易度で決まる（RULES.md 6 章）
+			Hud->SetAllowRotation(bSessionAllowRotation);
+			Hud->AddToViewport();
+			// 残りピース数などの初期表示（選択はまだ無い）
+			RefreshHud();
+		}
+		else
 		{
 			// 人が PlayWidgetClass を別系統のウィジェットに差し替えた。ボタンを結べないので出さない
 			UE_LOG(LogCubelith, Error,
 				TEXT("PlayWidgetClass（%s）が UCubelithHudWidget の派生ではないので HUD を出せない"),
 				*Widget->GetClass()->GetName());
 			ActiveWidget = nullptr;
-			return;
 		}
-
-		BindHud(*Hud);
-		// 回転モードのトグルを出すかは難易度で決まる（RULES.md 6 章）
-		Hud->SetAllowRotation(bSessionAllowRotation);
-		Hud->AddToViewport();
-		// 残りピース数などの初期表示（選択はまだ無い）
-		RefreshHud();
 	}
+
+	// FGame は構築時にクリア判定を 1 回走らせるが OnChange は呼ばない。散らした直後は普通クリアではないものの、
+	// 初期状態も同じ経路に通しておく（前のセッションのクリアの状態が残らないようにするため）。
+	// **HUD を出した後に通す**ので、万一散らした直後がクリアならクリア画面が HUD を置き換えて残る
+	HandleSolvedChanged(Game->Solved());
 }
 
 void ACubelithGameMode::ToggleLock(int32 PieceId)
@@ -622,8 +594,9 @@ void ACubelithGameMode::EndSession()
 		PlayerController->ResetForNewSession();
 	}
 
-	// 画面に残らないよう仮表示を消す（Tick もここで止まる）
-	UpdateSolvedDisplay(false);
+	// クリアの状態を落とす（次のセッションでもう一度クリアしたときに、変わり目としてまた拾えるように）。
+	// 画面はここでは切り替えない（呼び出し元の ShowTitle / StartSession が続けて切り替える）
+	HandleSolvedChanged(false);
 
 	// FGame を先に畳む（OnChange からピースのアクタを触るので、アクタを消す前に止める）
 	Game.Reset();
@@ -877,41 +850,64 @@ void ACubelithGameMode::PlaySnapSound()
 	UGameplayStatics::PlaySound2D(this, SnapSound);
 }
 
-void ACubelithGameMode::UpdateSolvedDisplay(bool bSolved)
+void ACubelithGameMode::HandleSolvedChanged(bool bInSolved)
 {
-	if (bSolved == bSolvedShown)
+	// 偽 → 真の変わり目だけを拾う ＝ クリア画面を出すのは一度だけ（配置が変わるたびに来るので、
+	// ここで弾かないと同じクリアで何度も画面を作り直してしまう。main.ts の finished と同じ役目）
+	if (bInSolved == bSolved)
 	{
 		return;
 	}
-	bSolvedShown = bSolved;
+	bSolved = bInSolved;
 
-	// 仮表示を出し続けるための Tick は、クリアしている間だけ回す
-	SetActorTickEnabled(bSolved);
-
-	if (bSolved)
+	if (!bSolved)
 	{
-		// クリアした形が歪んで見えないよう、回転モードを抜けて表示だけのねじれを解く
-		// （main.ts の showClear が exitRotateMode を通すのと同じ）
-		if (ACubelithPlayerController* const PlayerController = GetCubelithPlayerController())
-		{
-			PlayerController->ExitRotateMode();
-		}
-
-		UE_LOG(LogCubelith, Log,
-			TEXT("クリア: 全ピースが N×N×N のどこかに重なりなく収まった（RULES.md 3.4）"));
-		// 次の Tick を待たずに出す（判定の直後に見えるように）
-		if (GEngine != nullptr)
-		{
-			GEngine->AddOnScreenDebugMessage(SolvedMessageKey, SolvedMessageSeconds, FColor::Green, SolvedMessageText);
-		}
+		UE_LOG(LogCubelith, Log, TEXT("クリア状態ではなくなった"));
 		return;
 	}
 
-	UE_LOG(LogCubelith, Log, TEXT("クリア状態ではなくなった"));
-	if (GEngine != nullptr)
+	UE_LOG(LogCubelith, Log,
+		TEXT("クリア: 全ピースが N×N×N のどこかに重なりなく収まった（RULES.md 3.4）"));
+
+	ShowClear();
+}
+
+void ACubelithGameMode::ShowClear()
+{
+	// ピースの操作を止める（RULES.md 5.2-4）。走っている回転モードのねじれとスナップの補間は
+	// この中で片付き、選択も外れる（クリアした形が歪んだまま・ずれたまま残らないように）。
+	// 解釈: 止めるのはピースの操作だけで、カメラの旋回とズームは残す（自動旋回と演出は U5。
+	// 詳しくは ACubelithPlayerController::SetPieceInputEnabled の宣言）
+	if (ACubelithPlayerController* const PlayerController = GetCubelithPlayerController())
 	{
-		GEngine->RemoveOnScreenDebugMessage(SolvedMessageKey);
+		PlayerController->SetPieceInputEnabled(false);
 	}
+
+	// プレイ中 HUD を外してクリア画面へ（BeginScreen が前の画面を必ず外す）
+	UCubelithScreenWidget* const Widget = BeginScreen(ECubelithScreen::Clear);
+	if (Widget == nullptr)
+	{
+		return;
+	}
+
+	UCubelithClearWidget* const Clear = Cast<UCubelithClearWidget>(Widget);
+	if (Clear == nullptr)
+	{
+		// 人が ClearWidgetClass を別系統のウィジェットに差し替えた。ボタンを結べないので出さない
+		UE_LOG(LogCubelith, Error,
+			TEXT("ClearWidgetClass（%s）が UCubelithClearWidget の派生ではないのでクリア画面を出せない"),
+			*Widget->GetClass()->GetName());
+		ActiveWidget = nullptr;
+		return;
+	}
+
+	// 遊んだ盤面の条件を出す（セッションはまだ畳んでいないので今の値がそのまま使える）
+	Clear->SetBoardSummary(GetSessionSpaceSize(), GetSessionPieceCount(), bSessionAllowRotation, GetSessionSeed());
+	// 「もう一度」は難易度そのままシードだけ引き直し、「難易度を変える」はタイトルへ戻る（RULES.md 2 章 5）。
+	// どちらもセッションを畳んでから作り直す（前の盤面のピース・鍵アイコン・スナップは EndSession で消える）
+	Clear->OnRetry.BindUObject(this, &ACubelithGameMode::RestartWithNewSeed);
+	Clear->OnBackToTitle.BindUObject(this, &ACubelithGameMode::ReturnToTitle);
+	Clear->AddToViewport();
 }
 
 void ACubelithGameMode::RetryFrameCamera()
