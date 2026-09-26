@@ -34,6 +34,9 @@ namespace CubelithCoreTests
 	/** JSON の数値配列を int32 で読む */
 	bool ReadInt32Array(const TSharedPtr<FJsonObject>& Object, const FString& FieldName, TArray<int32>& OutValues, FString& OutError);
 
+	/** JSON の数値フィールドを uint32 で読む（cases[].seed のように int32 に入らない値があるもの） */
+	bool ReadUint32Field(const TSharedPtr<FJsonObject>& Object, const FString& FieldName, uint32& OutValue, FString& OutError);
+
 	/**
 	 * JSON の「数値配列の配列」を int32 で読む（orientations.json の matrices のように行優先 9 要素の並びが続くもの）。
 	 * 内側の要素数が ExpectedInnerNum でなければ失敗させる。
@@ -48,6 +51,12 @@ namespace CubelithCoreTests
 
 	/** Object の FieldName が [x, y, z] の配列（pieces[].voxels のような並び）なら TArray<FVec3> として読む */
 	bool ReadVec3Array(const TSharedPtr<FJsonObject>& Object, const FString& FieldName, TArray<Cubelith::FVec3>& OutVec3s, FString& OutError);
+
+	/**
+	 * Object の FieldName が { "id", "voxels" } の配列（cases[].pieces の並び）なら TArray<FPiece> として読む。
+	 * voxels は既に局所座標なので（Docs/FIXTURES.md）、CreatePiece を通さずそのまま入れる。
+	 */
+	bool ReadPieceArray(const TSharedPtr<FJsonObject>& Object, const FString& FieldName, TArray<Cubelith::FPiece>& OutPieces, FString& OutError);
 
 	/** JSON の値が { "pieceId", "orientation", "position" } なら FPlacement として読む（Docs/FIXTURES.md「共通の表し方」） */
 	bool ReadPlacement(const TSharedPtr<FJsonValue>& Value, const FString& What, Cubelith::FPlacement& OutPlacement, FString& OutError);
