@@ -13,6 +13,7 @@
 #include "TimerManager.h"
 
 #include "CubelithDifficulty.h"
+#include "CubelithLockOps.h"
 #include "CubelithLog.h"
 #include "CubelithOrbitPawn.h"
 #include "CubelithPlayerController.h"
@@ -23,6 +24,7 @@
 #include "CubelithSeed.h"
 #include "CubelithTitleWidget.h"
 #include "Generate.h"
+#include "Hint.h"
 
 namespace
 {
@@ -250,7 +252,8 @@ void ACubelithGameMode::StartSession(int32 N, int32 M, bool bInAllowRotation, ui
 	// （後続タスクのヒントが Solution を、散らし直しが同じシードを読む）
 	SessionPuzzle = Cubelith::GeneratePuzzle(SessionN, SessionM, InSeed);
 
-	// 初期散らし（RULES.md 3.2-5）。ヒントで固定したピースを残す Keep は後続タスクで使うのでここでは空
+	// 初期散らし（RULES.md 3.2-5）。まだ固定は何も無いので Keep は空
+	// （ヒントで固定したピースを残すのは散らし直し。ScatterAgain が同じシードで呼び直す）
 	Cubelith::FScatterOptions ScatterOptions;
 	ScatterOptions.bAllowRotation = bInAllowRotation;
 	const TArray<Cubelith::FPlacement> Scattered =
@@ -310,6 +313,191 @@ void ACubelithGameMode::StartSession(int32 N, int32 M, bool bInAllowRotation, ui
 	{
 		Widget->AddToViewport();
 	}
+}
+
+void ACubelithGameMode::ToggleLock(int32 PieceId)
+{
+	if (!Game.IsValid() || PieceId == INDEX_NONE)
+	{
+		return;
+	}
+
+	// 未知のピース id を Cubelith::FGame へ渡すと checkf で落ちるので、配置の有無で先に弾く
+	if (Game->PlacementOf(PieceId) == nullptr)
+	{
+		UE_LOG(LogCubelith, Warning, TEXT("未知のピース id %d の固定を切り替えようとした"), PieceId);
+		return;
+	}
+
+	const Cubelith::ELockToggleAction Action = Cubelith::DecideLockToggle(Game->LockKindOf(PieceId));
+	if (Action == Cubelith::ELockToggleAction::Blocked)
+	{
+		// ヒントで置いたピースの固定は解除できない（RULES.md 3.3）。HUD はボタンを押せなくするが、
+		// ここでも弾いて「押せてしまっても外れない」ようにしておく
+		UE_LOG(LogCubelith, Log, TEXT("ピース %d はヒントの固定なので解除できない（RULES.md 3.3）"), PieceId);
+		return;
+	}
+
+	ACubelithPlayerController* const PlayerController = GetCubelithPlayerController();
+
+	if (Action == Cubelith::ELockToggleAction::Lock)
+	{
+		// 固定すると回転もできなくなるので、走っている自由回転を先に確定させてから固定する
+		// （main.ts の onToggleLock が exitRotateMode を通すのと同じ順）
+		if (PlayerController != nullptr)
+		{
+			PlayerController->CommitFreeRotation();
+		}
+
+		Game->Lock(PieceId, Cubelith::ELockKind::Manual);
+
+		// 固定した位置で止めるので、走っているスナップの補間は打ち切る（表示だけが後から動かない）
+		if (PlayerController != nullptr)
+		{
+			PlayerController->CancelSnapMotionFor(PieceId);
+		}
+	}
+	else
+	{
+		Game->Unlock(PieceId);
+	}
+
+	// 固定 / 固定解除は配置を変えない ＝ FGame の OnChange が来ないので、派生する表示はここで揃える
+	// （鍵アイコンと、固定中は出さないスナップ候補の発光。RULES.md 5.1 / 6 章）
+	RefreshLockIcons();
+	if (PlayerController != nullptr)
+	{
+		PlayerController->RefreshSnapHint();
+	}
+
+	UE_LOG(LogCubelith, Log, TEXT("ピース %d を%s（RULES.md 3.3）"),
+		PieceId, (Action == Cubelith::ELockToggleAction::Lock) ? TEXT("手動で固定した") : TEXT("固定解除した"));
+}
+
+void ACubelithGameMode::UseHint()
+{
+	if (!Game.IsValid())
+	{
+		return;
+	}
+
+	// LockedIds は毎回作られる配列なので、TArrayView に渡す間だけ生かしておく
+	const TArray<int32> LockedIds = Game->LockedIds();
+	const TOptional<int32> PieceId =
+		Cubelith::PickHintPiece(Game->Placements(), SessionPuzzle.Solution, LockedIds);
+	if (!PieceId.IsSet())
+	{
+		// 未固定が 1 個以下（RULES.md 3.7）。HUD はボタンを無効にするが、ここでも何もしない
+		UE_LOG(LogCubelith, Log, TEXT("使えるヒントが無い（未固定のピースが 1 個以下。RULES.md 3.7）"));
+		return;
+	}
+
+	const Cubelith::FPlacement* const Answer = SessionPuzzle.Solution.FindByPredicate(
+		[TargetId = PieceId.GetValue()](const Cubelith::FPlacement& Placement) { return Placement.PieceId == TargetId; });
+	if (Answer == nullptr)
+	{
+		UE_LOG(LogCubelith, Error, TEXT("ピース %d の解答配置が無いのでヒントを使えない"), PieceId.GetValue());
+		return;
+	}
+
+	ACubelithPlayerController* const PlayerController = GetCubelithPlayerController();
+
+	// ヒントで置くピースが自由回転中なら、そのねじれを先に片付ける（main.ts と同じ）
+	if (PlayerController != nullptr)
+	{
+		PlayerController->CommitFreeRotation();
+	}
+
+	// 解答の位置と向きへ置いてから固定する（**この順が要る**。Place は固定済みのピースに効かない）。
+	// Place の OnChange で配置・クリア判定・スナップ候補は反映される
+	Game->Place(PieceId.GetValue(), Answer->Orientation, Answer->Position);
+	Game->Lock(PieceId.GetValue(), Cubelith::ELockKind::Hint);
+
+	// 送った先で止めるので、走っているスナップの補間は打ち切る
+	if (PlayerController != nullptr)
+	{
+		PlayerController->CancelSnapMotionFor(PieceId.GetValue());
+	}
+
+	// 固定を付けたのは Place の後なので、鍵アイコンと候補の発光はここで揃え直す（ToggleLock と同じ理由）
+	RefreshLockIcons();
+	if (PlayerController != nullptr)
+	{
+		PlayerController->RefreshSnapHint();
+	}
+
+	UE_LOG(LogCubelith, Log,
+		TEXT("ヒントでピース %d を解答へ送って固定した: 向き %d, 位置 (%d, %d, %d)（RULES.md 3.7）"),
+		PieceId.GetValue(), Answer->Orientation, Answer->Position.X, Answer->Position.Y, Answer->Position.Z);
+}
+
+bool ACubelithGameMode::IsHintAvailable() const
+{
+	if (!Game.IsValid())
+	{
+		return false;
+	}
+
+	return Cubelith::IsHintAvailable(Game->Pieces().Num(), Game->LockedIds().Num());
+}
+
+void ACubelithGameMode::ScatterAgain()
+{
+	if (!Game.IsValid())
+	{
+		return;
+	}
+
+	ACubelithPlayerController* const PlayerController = GetCubelithPlayerController();
+	if (PlayerController != nullptr)
+	{
+		// 散らす前に表示上のねじれを片付ける（main.ts の onReset が exitRotateMode を通すのと同じ）
+		PlayerController->CommitFreeRotation();
+		// ピースの選択も外れる（RULES.md 3.3「やり直し」）
+		PlayerController->SetSelectedPiece(INDEX_NONE);
+		// 走っているスナップの補間はすべて打ち切る（散らした先から表示だけが元へ戻っていかないように）
+		PlayerController->CancelAllSnapMotion();
+	}
+
+	Cubelith::FScatterOptions ScatterOptions;
+	ScatterOptions.bAllowRotation = bSessionAllowRotation;
+	// ヒントで固定したピースはその位置に残す（RULES.md 3.3。残すのは「現在の」配置。CubelithLockOps.h の「解釈:」）
+	ScatterOptions.Keep = Cubelith::CollectHintKeptPlacements(Game->Placements(),
+		[this](int32 PieceId) { return Game->LockKindOf(PieceId); });
+
+	// **同じシード**で散らし直す（RULES.md 3.3。ヒントの固定が無ければ最初の散らしと同じ配置に戻る）
+	const TArray<Cubelith::FPlacement> Scattered = Cubelith::ScatterPlacements(
+		SessionPuzzle.Pieces, SessionPuzzle.N, SessionPuzzle.Seed, ScatterOptions);
+
+	// Reset は手動の固定を解き、ヒントの固定は残す。OnChange が回るので配置・クリアの表示・
+	// スナップ候補（と後続タスクで繋ぐ残りピース数）は実際の状態へ揃う
+	Game->Reset(Scattered);
+
+	// 手動の固定が解けた分の鍵アイコンは配置の変化では分からないので、ここで揃え直す
+	RefreshLockIcons();
+
+	UE_LOG(LogCubelith, Log, TEXT("散らし直した: seed=%u, ヒントで残したピース=%d 個（RULES.md 3.3）"),
+		SessionPuzzle.Seed, ScatterOptions.Keep.Num());
+}
+
+void ACubelithGameMode::RefreshLockIcons()
+{
+	if (!Game.IsValid() || PuzzleActor == nullptr)
+	{
+		return;
+	}
+
+	// 全ピースに今の状態を流す。ACubelithPuzzleActor::SetLockIcon は変わらないピースでは何もしないので、
+	// まとめて流し込んでも余計な書き直しは起きない
+	for (const Cubelith::FPiece& Piece : Game->Pieces())
+	{
+		PuzzleActor->SetLockIcon(Piece.Id, Game->LockKindOf(Piece.Id));
+	}
+}
+
+ACubelithPlayerController* ACubelithGameMode::GetCubelithPlayerController() const
+{
+	return Cast<ACubelithPlayerController>(UGameplayStatics::GetPlayerController(this, 0));
 }
 
 void ACubelithGameMode::RestartWithNewSeed()

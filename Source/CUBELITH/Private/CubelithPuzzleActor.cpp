@@ -9,6 +9,7 @@
 #include "UObject/ConstructorHelpers.h"
 
 #include "CubelithCoords.h"
+#include "CubelithLockOps.h"
 #include "CubelithLog.h"
 
 namespace
@@ -70,6 +71,26 @@ ACubelithPuzzleActor::ACubelithPuzzleActor()
 		UE_LOG(LogCubelith, Warning,
 			TEXT("既定のマテリアル /Engine/BasicShapes/BasicShapeMaterial が見つからない。VoxelMaterial を差し替えること"));
 	}
+
+	// 固定の鍵アイコンの仮の形（RULES.md 6 章）。**本物の南京錠のメッシュ / アイコンは人が後で入れる**ので、
+	// 既定はエンジンの球にしておく（立方体だとボクセルと形が同じで「別のもの」に見えない）。
+	// マテリアルはボクセルと共用し、種類ごとの動的マテリアルに銀 / 金を流す（Build で作る）
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> DefaultLockIconMesh(
+		TEXT("/Engine/BasicShapes/Sphere.Sphere"));
+	if (DefaultLockIconMesh.Succeeded())
+	{
+		LockIconMesh = DefaultLockIconMesh.Object;
+	}
+	else
+	{
+		UE_LOG(LogCubelith, Warning,
+			TEXT("既定の鍵アイコンのメッシュ /Engine/BasicShapes/Sphere.Sphere が見つからない。LockIconMesh を差し替えること"));
+	}
+
+	if (DefaultVoxelMaterial.Succeeded())
+	{
+		LockIconMaterial = DefaultVoxelMaterial.Object;
+	}
 }
 
 void ACubelithPuzzleActor::Build(TArrayView<const Cubelith::FPiece> Pieces, int32 N)
@@ -81,6 +102,17 @@ void ACubelithPuzzleActor::Build(TArrayView<const Cubelith::FPiece> Pieces, int3
 		{
 			Existing->DestroyComponent();
 		}
+	}
+	// 鍵アイコンのコンポーネントも作り直す（ピースと同じ理由。前の盤面の固定は残さない）
+	if (ManualLockIcons != nullptr)
+	{
+		ManualLockIcons->DestroyComponent();
+		ManualLockIcons = nullptr;
+	}
+	if (HintLockIcons != nullptr)
+	{
+		HintLockIcons->DestroyComponent();
+		HintLockIcons = nullptr;
 	}
 	if (PieceMeshes.Num() > 0)
 	{
@@ -96,6 +128,8 @@ void ACubelithPuzzleActor::Build(TArrayView<const Cubelith::FPiece> Pieces, int3
 	FreeRotations.Reset();
 	// スナップの補間も同じ（走っていた補間は外で打ち切られている。Cubelith::FSnapMotion::CancelAll）
 	ViewOffsets.Reset();
+	// 作り直したら固定も無くなる（新しい盤面の固定は呼び出し側が SetLockIcon で入れ直す）
+	LockIcons.Reset();
 	// 作り直したら選択は無くなる（選び直すのは操作する側。RULES.md 3.3 の外からの解除に当たる）
 	SelectedPieceId = INDEX_NONE;
 	SnapHintPieceId = INDEX_NONE;
@@ -184,7 +218,55 @@ void ACubelithPuzzleActor::Build(TArrayView<const Cubelith::FPiece> Pieces, int3
 		PieceMeshes.Add(Piece.Id, Mesh);
 	}
 
+	// 鍵アイコンは固定の種類ごとに 1 コンポーネント（ドローコールは最大 2 つで済む。RULES.md 6 章）。
+	// 作るだけでインスタンスは置かない（固定が付いた時点で SetLockIcon から RebuildLockIcons が置く）
+	ManualLockIcons = CreateLockIconMeshComponent(Cubelith::ELockKind::Manual);
+	HintLockIcons = CreateLockIconMeshComponent(Cubelith::ELockKind::Hint);
+
 	UE_LOG(LogCubelith, Verbose, TEXT("ピースのコンポーネントを %d 個作った（N=%d）"), PieceMeshes.Num(), SpaceSize);
+}
+
+UInstancedStaticMeshComponent* ACubelithPuzzleActor::CreateLockIconMeshComponent(Cubelith::ELockKind Kind)
+{
+	const bool bHint = (Kind == Cubelith::ELockKind::Hint);
+	const TCHAR* const KindName = bHint ? TEXT("Hint") : TEXT("Manual");
+
+	// 名前に世代を付けるのはピースと同じ理由（前の Build のコンポーネントが GC 待ちで名前を握っていることがある）
+	const FString ComponentName = (BuildGeneration == 0)
+		? FString::Printf(TEXT("LockIcon_%s"), KindName)
+		: FString::Printf(TEXT("LockIcon_%s_g%d"), KindName, BuildGeneration);
+
+	UInstancedStaticMeshComponent* Mesh = NewObject<UInstancedStaticMeshComponent>(
+		this, UInstancedStaticMeshComponent::StaticClass(), FName(*ComponentName));
+	if (Mesh == nullptr)
+	{
+		return nullptr;
+	}
+
+	Mesh->SetupAttachment(PuzzleRoot);
+	Mesh->SetMobility(EComponentMobility::Movable);
+	Mesh->SetStaticMesh(LockIconMesh);
+
+	// アイコンは見せるだけ。ピックはピース本体で拾うので、ライントレースに当たらせない
+	// （当たると固定中のピースを押したときにアイコンがピースの手前で遮ってしまう）
+	Mesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	Mesh->SetGenerateOverlapEvents(false);
+	Mesh->SetCanEverAffectNavigation(false);
+
+	if (LockIconMaterial != nullptr)
+	{
+		UMaterialInstanceDynamic* IconMaterial = UMaterialInstanceDynamic::Create(LockIconMaterial, this);
+		if (IconMaterial != nullptr)
+		{
+			// 銀 / 金のどちらを使うかは Cubelith::LockIconColor が決める（色そのものは人が調整する UPROPERTY）
+			IconMaterial->SetVectorParameterValue(LockIconColorParameterName,
+				Cubelith::LockIconColor(Kind, ManualLockIconColor, HintLockIconColor));
+			Mesh->SetMaterial(0, IconMaterial);
+		}
+	}
+
+	Mesh->RegisterComponent();
+	return Mesh;
 }
 
 void ACubelithPuzzleActor::UpdatePlacements(TArrayView<const Cubelith::FPlacement> Placements)
@@ -210,6 +292,13 @@ void ACubelithPuzzleActor::UpdatePlacements(TArrayView<const Cubelith::FPlacemen
 	{
 		// 求めたのはボクセルの中心までの距離なので、端まで入るようボクセル 1 個分を足す
 		BoundingRadiusCm = FMath::Sqrt(MaxDistanceSquared) + Cubelith::VoxelSizeCm;
+	}
+
+	// 鍵アイコンはボクセルの中心に付いているので、配置が動いたら一緒に書き直す（ピースに追従する）。
+	// 固定が 1 つも無ければ何もしない ＝ 普段のドラッグでこの経路の負荷は増えない
+	if (LockIcons.Num() > 0)
+	{
+		RebuildLockIcons();
 	}
 }
 
@@ -377,6 +466,152 @@ void ACubelithPuzzleActor::RedrawPiece(int32 PieceId)
 	// ApplyPlacement が LastPlacements を書き換えるので、参照ではなく写しを渡す
 	const Cubelith::FPlacement Placement = *Found;
 	ApplyPlacement(Placement, SolutionSpaceCenterOffset(SpaceSize), GetInstanceScale());
+
+	// このピースにアイコンが付いていればそれも追従させる（固定中のピースは動かないので普段は通らない）
+	if (LockIcons.Contains(PieceId))
+	{
+		RebuildLockIcons();
+	}
+}
+
+void ACubelithPuzzleActor::SetLockIcon(int32 PieceId, const TOptional<Cubelith::ELockKind>& Kind)
+{
+	if (!PieceIndexById.Contains(PieceId))
+	{
+		// TS の setLockIcon は throw する。UE 側は落とさずに警告だけ出す（表示の話なので遊べる状態を壊さない）
+		UE_LOG(LogCubelith, Warning, TEXT("未知のピース id %d に鍵アイコンを設定しようとした"), PieceId);
+		return;
+	}
+
+	// 変わっていなければ作り直さない（固定の状態を毎回まとめて流し込む呼び出し方でも余計な書き直しが起きない）
+	const Cubelith::ELockKind* Existing = LockIcons.Find(PieceId);
+	if (!Kind.IsSet())
+	{
+		if (Existing == nullptr)
+		{
+			return;
+		}
+		LockIcons.Remove(PieceId);
+	}
+	else
+	{
+		if (Existing != nullptr && *Existing == Kind.GetValue())
+		{
+			return;
+		}
+		LockIcons.Add(PieceId, Kind.GetValue());
+	}
+
+	if (LockIconMesh == nullptr)
+	{
+		// 人がまだメッシュを差し替えていない（既定のエンジンの球も見つからなかった場合）。
+		// 状態だけは持っておく（後で差し替えて Build し直せば出る）
+		UE_LOG(LogCubelith, Warning, TEXT("LockIconMesh が空なので固定の鍵アイコンが出ない。エディタで設定すること"));
+		return;
+	}
+
+	RebuildLockIcons();
+}
+
+TOptional<Cubelith::ELockKind> ACubelithPuzzleActor::GetLockIcon(int32 PieceId) const
+{
+	const Cubelith::ELockKind* Found = LockIcons.Find(PieceId);
+	return (Found != nullptr) ? TOptional<Cubelith::ELockKind>(*Found) : TOptional<Cubelith::ELockKind>();
+}
+
+UInstancedStaticMeshComponent* ACubelithPuzzleActor::GetLockIconMeshComponent(Cubelith::ELockKind Kind) const
+{
+	return (Kind == Cubelith::ELockKind::Hint) ? HintLockIcons.Get() : ManualLockIcons.Get();
+}
+
+void ACubelithPuzzleActor::RebuildLockIcons()
+{
+	const FVector CenterOffset = SolutionSpaceCenterOffset(SpaceSize);
+	const FVector IconScale = GetLockIconScale();
+
+	const Cubelith::ELockKind Kinds[2] = { Cubelith::ELockKind::Manual, Cubelith::ELockKind::Hint };
+
+	TArray<FTransform> Transforms;
+
+	for (const Cubelith::ELockKind Kind : Kinds)
+	{
+		UInstancedStaticMeshComponent* Mesh = GetLockIconMeshComponent(Kind);
+		if (Mesh == nullptr)
+		{
+			// Build を呼ぶ前（コンポーネントがまだ無い）。次の Build のあとに出る
+			continue;
+		}
+
+		Transforms.Reset();
+		for (const TPair<int32, Cubelith::ELockKind>& Pair : LockIcons)
+		{
+			if (Pair.Value == Kind)
+			{
+				AppendLockIconTransforms(Pair.Key, CenterOffset, IconScale, Transforms);
+			}
+		}
+
+		// その種類の固定が 1 つも無ければインスタンスが 0 個になる ＝ 描かれない（lockIcons.ts と同じ振る舞い）
+		Mesh->ClearInstances();
+		for (const FTransform& Transform : Transforms)
+		{
+			Mesh->AddInstance(Transform, /*bWorldSpace=*/false);
+		}
+	}
+}
+
+void ACubelithPuzzleActor::AppendLockIconTransforms(
+	int32 PieceId, const FVector& CenterOffset, const FVector& IconScale, TArray<FTransform>& OutTransforms) const
+{
+	const Cubelith::FPiece* Piece = FindPiece(PieceId);
+	const Cubelith::FPlacement* Placement = LastPlacements.Find(PieceId);
+	if (Piece == nullptr || Placement == nullptr)
+	{
+		// まだ一度も配置を受けていない。次の UpdatePlacements でアイコンごと出る
+		return;
+	}
+
+	// 表示だけのずれ（スナップの補間）が掛かっていれば同じだけずらす（ApplyPlacement と同じ置換）。
+	// 自由回転は見ない: 固定中のピースは回せない（RULES.md 3.3）ので掛かっていることが無く、
+	// 固定の直前に走っていた分は呼び出し側が確定させてから固定する（ACubelithGameMode::ToggleLock）
+	const FVector* GridOffset = ViewOffsets.Find(PieceId);
+	const FVector ViewOffsetCm = (GridOffset != nullptr)
+		? FVector(GridOffset->X, GridOffset->Z, GridOffset->Y) * Cubelith::VoxelSizeCm
+		: FVector::ZeroVector;
+
+	const TArray<Cubelith::FVec3> Voxels = Cubelith::PlacedVoxels(*Piece, *Placement);
+	OutTransforms.Reserve(OutTransforms.Num() + Voxels.Num());
+
+	for (const Cubelith::FVec3& Voxel : Voxels)
+	{
+		// ボクセルの中心（RULES.md 6 章）。ボクセル本体より小さいので中に見える（LockIconSizeRatio）
+		const FVector Location = Cubelith::VoxelToWorld(Voxel) + CenterOffset + ViewOffsetCm;
+		OutTransforms.Emplace(FQuat::Identity, Location, IconScale);
+	}
+}
+
+FVector ACubelithPuzzleActor::GetLockIconScale() const
+{
+	const double Scale = static_cast<double>(LockIconSizeRatio) * Cubelith::VoxelSizeCm / GetLockIconMeshSizeCm();
+	return FVector(Scale, Scale, Scale);
+}
+
+double ACubelithPuzzleActor::GetLockIconMeshSizeCm() const
+{
+	if (LockIconMesh != nullptr)
+	{
+		// GetVoxelMeshSizeCm と同じ測り方（境界の最も長い辺をメッシュの 1 辺とみなす）。
+		// 人が別のメッシュ / 板ポリのアイコンに差し替えても大きさが合う
+		const FBoxSphereBounds Bounds = LockIconMesh->GetBounds();
+		const double LongestSide =
+			2.0 * FMath::Max3(Bounds.BoxExtent.X, Bounds.BoxExtent.Y, Bounds.BoxExtent.Z);
+		if (LongestSide > UE_DOUBLE_SMALL_NUMBER)
+		{
+			return LongestSide;
+		}
+	}
+
+	return DefaultVoxelMeshSizeCm;
 }
 
 FVector ACubelithPuzzleActor::GetInstanceScale() const

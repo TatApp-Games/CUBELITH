@@ -525,6 +525,30 @@ void ACubelithPlayerController::ResetForNewSession()
 	UpdateOrbitEnabled();
 }
 
+void ACubelithPlayerController::CommitFreeRotation()
+{
+	// 掛かっていなければ CommitRotateDrag が自分で弾く（DragMode が RotatePiece 以外なら何もしない）
+	CommitRotateDrag();
+}
+
+void ACubelithPlayerController::CancelSnapMotionFor(int32 PieceId)
+{
+	CancelSnapMotion(PieceId);
+}
+
+void ACubelithPlayerController::CancelAllSnapMotion()
+{
+	if (SnapMotion.Num() == 0)
+	{
+		return;
+	}
+
+	// 表示だけのずれは戻す（散らし直しではピースのアクタがそのまま残るので、
+	// ずれたままの見た目が残らないようにする。ResetForNewSession はアクタごと消えるので流さない）
+	SnapMotion.CancelAll(SnapOffsetBuffer);
+	ApplySnapOffsets();
+}
+
 void ACubelithPlayerController::EnsureSnapControl()
 {
 	const Cubelith::FGame* Game = GetGame();
@@ -946,8 +970,8 @@ void ACubelithPlayerController::SetSelectedPiece(int32 PieceId)
 		return;
 	}
 
-	// 固定中のピースも選択だけはできる（RULES.md 3.3）。固定を付ける手段は U4 なので、
-	// ここでは状態を読んでログに出すだけにして、判定の経路を通しておく
+	// 固定中のピースも選択だけはできる（RULES.md 3.3）。固定を付け外しするのは
+	// ACubelithGameMode::ToggleLock / UseHint で、ここは選んだピースの状態をログに出すだけ
 	const TCHAR* LockText = TEXT("なし");
 	if (const Cubelith::FGame* Game = GetGame())
 	{
