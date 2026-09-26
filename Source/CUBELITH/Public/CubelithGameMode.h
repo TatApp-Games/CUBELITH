@@ -12,6 +12,7 @@
 #include "Templates/UniquePtr.h"
 
 #include "CubelithDifficulty.h"
+#include "CubelithSave.h"
 #include "Game.h"
 #include "Generate.h"
 
@@ -120,6 +121,19 @@ public:
 	void StartSession(int32 N, int32 M, bool bInAllowRotation, uint32 InSeed);
 
 	/**
+	 * 保存された盤面から再開する（タイトルの「続きから」。RULES.md 3.8）。
+	 *
+	 * その盤面の難易度とシードで `Cubelith::GeneratePuzzle` を呼び直してピースの形を作り
+	 * （形は保存しない。RULES.md 3.6 で再現できる）、散らす代わりに保存された配置を初期配置にする。
+	 * 保存された固定も復元する。**復元できない盤面**（ピース id が食い違うなど。
+	 * `Cubelith::ProgressFitsPieces`）は諦めて通常の散らしで始める（例外は出さない）。
+	 *
+	 * 値で受けるのは、この先で `SaveData.Progress` を書き換えるため（`&SaveData.Progress` を
+	 * そのまま渡すと、書き換えた瞬間に読んでいる途中の中身が変わる）
+	 */
+	void ResumeSession(FCubelithSavedProgress Progress);
+
+	/**
 	 * 同じ難易度でシードだけ引き直して作り直す（RULES.md 2 章の「もう一度」「次の問題」）。
 	 * セッションが走っていなければ直前に選ばれていた難易度で始める
 	 */
@@ -195,6 +209,12 @@ public:
 
 	/** 今出している画面 */
 	ECubelithScreen GetActiveScreen() const { return ActiveScreen; }
+
+	/**
+	 * 今のセーブ（RULES.md 3.8）。**起動時に 1 回だけ読み、以後はこの 1 つを持ち回して変更のたびに書く**
+	 * （Docs/SPEC_UE.md 4 章の「セーブ」節。Web 版 main.ts の `save` と同じ持ち方）
+	 */
+	const FCubelithSaveData& GetSaveData() const { return SaveData; }
 
 	/**
 	 * 今のセッションの生成結果（RULES.md 3.2 の N / M / シード / ピース / 解答）。
@@ -296,6 +316,54 @@ protected:
 
 private:
 	/**
+	 * StartSession / ResumeSession の本体。Restore が nullptr でなく、かつ生成したピースと
+	 * ちょうど 1 対 1 に対応していれば、散らす代わりにその配置と固定から始める（RULES.md 3.8）
+	 */
+	void StartSessionWith(int32 N, int32 M, bool bInAllowRotation, uint32 InSeed,
+		const FCubelithSavedProgress* Restore);
+
+	/**
+	 * メモリ上のセーブをスロットへ書く（RULES.md 3.8）。
+	 * 書けなくても遊びは続けられるので、失敗は Cubelith::StoreSaveData の警告だけで済ませる
+	 */
+	void PersistSave();
+
+	/**
+	 * 今の盤面を「途中の盤面」として書く（Web 版 main.ts の saveBoard）。
+	 *
+	 * セッションが無い（タイトル / クリア画面）ときと、**クリアした後**は書かない
+	 * （クリアした盤面は「続きから」に出さない。RULES.md 3.8。ShowClear が回数を記録して盤面を消している）。
+	 * 呼ぶのは、配置が変わったとき（`Cubelith::FGame` の `OnChange`）・配置が変わらない操作
+	 * （固定 / 固定解除・ヒント・散らし直し）の直後・アプリが裏に回るとき
+	 */
+	void SaveBoard();
+
+	/**
+	 * 「途中の盤面」を組み立ててメモリ上のセーブへ入れ、スロットへ書く（Web 版 main.ts の saveProgress）。
+	 * 難易度とシードは今のセッションのもの。**「最後に選んだ難易度」もここで確定する**（RULES.md 3.8）
+	 */
+	void SaveProgress(TArrayView<const Cubelith::FPlacement> Placements,
+		TArrayView<const FCubelithSavedLock> Locks, int32 Remaining);
+
+	/** 今のセッションの難易度（RULES.md 3.1 の N / M / パズルの回転）を保存する形で返す */
+	FCubelithSavedDifficulty SessionDifficulty() const;
+
+	/** 「続きから」が押されたとき（UCubelithTitleWidget::OnResume から呼ばれる） */
+	void HandleTitleResume();
+
+	/**
+	 * アプリが裏に回る / 終わるときに呼ばれる（`FCoreDelegates` のアプリのライフサイクルの通知）。
+	 * モバイルでは裏に回ったアプリが OS に終了させられることがあるので、ここでも盤面を書く
+	 */
+	void HandleApplicationPause();
+
+	/** 上の通知に登録する（BeginPlay で 1 回。登録し直しにならないよう EndPlay が必ず解除する） */
+	void RegisterLifecycleDelegates();
+
+	/** 登録を解除する（EndPlay。解除漏れがあると消えた GameMode を呼びに行く） */
+	void UnregisterLifecycleDelegates();
+
+	/**
 	 * 画面を切り替える。前の画面を必ず外し（screens.ts の clear）、その画面のクラスが割り当てられていれば
 	 * ウィジェットを作って返す。**ビューポートへ出すのは呼び出し側**（作ってから初期値と処理を結んでから
 	 * 出したいため）。クラスが空なら前の画面を外すだけで nullptr を返す
@@ -372,6 +440,17 @@ private:
 	bool bSolved = false;
 
 	/**
+	 * このセッションでクリアを記録したか（Web 版 main.ts の finished）。
+	 *
+	 * bSolved と分けてあるのは、**クリアした後の片付けでクリアでなくなることがある**ため
+	 * （ShowClear が通す ACubelithPlayerController::SetPieceInputEnabled(false) は走っている自由回転を
+	 * 最寄りの向きで確定させるので、その向きが解答と違えば FGame の OnChange が「クリアではない」を返す）。
+	 * これを bSolved だけで見ていると、クリアで消したはずの途中の盤面が書き戻される。
+	 * 落とすのは EndSession（次の盤面を作るとき）だけ
+	 */
+	bool bClearRecorded = false;
+
+	/**
 	 * 今のセッションの生成結果（Pieces と Solution・N / M / シード）。セッションが無ければ既定値。
 	 * Cubelith::FGeneratedPuzzle は USTRUCT ではないので素のメンバとして持つ（Docs/SPEC_UE.md 7.1）
 	 */
@@ -422,4 +501,23 @@ private:
 
 	/** 再試行した回数 */
 	int32 FrameCameraAttempts = 0;
+
+	/**
+	 * セーブの中身（RULES.md 3.8）。BeginPlay で 1 回読み、変更のたびに PersistSave で書く。
+	 * USTRUCT なので UPROPERTY で持てる（中身は素の値と TMap<FString, int32> だけ）
+	 */
+	UPROPERTY()
+	FCubelithSaveData SaveData;
+
+	/**
+	 * 起動時にセーブのスロットがあったか。タイトルの初期選択で「セーブの難易度」と
+	 * 「UPROPERTY の既定」のどちらを使うかの分かれ目（Docs/SPEC_UE.md 4 章の「タイトルの初期選択」）。
+	 * BeginPlay でだけ決まり、以後は変えない
+	 */
+	bool bLoadedFromSlot = false;
+
+	/** FCoreDelegates への登録（EndPlay で解除する） */
+	FDelegateHandle WillDeactivateHandle;
+	FDelegateHandle WillEnterBackgroundHandle;
+	FDelegateHandle WillTerminateHandle;
 };

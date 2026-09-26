@@ -1,6 +1,8 @@
 // CubelithSave（セーブデータの形と検証・更新。RULES.md 3.8・Docs/SPEC_UE.md 4 章）のテスト。
 // 移植元 WebMock/src/ui/save.ts に対応するテストは WebMock にも無いので、確かめるのは
-// 既定値 / DifficultyKey の形 / 検証で弾く条件 / RecordClear / ProgressFitsPieces / 壊れたデータの扱い。
+// 既定値 / DifficultyKey の形 / 検証で弾く条件 / RecordClear / ProgressFitsPieces / 壊れたデータの扱いと、
+// ゲームの流れに繋ぐ側（今の盤面から保存する形を作る MakeSavedProgress / CollectSavedLocks、
+// 保存された盤面を初期配置へ直す ToCorePlacements、途中の盤面を覚える SetProgress）。
 // スロットへの読み書き（Cubelith::LoadSaveData / StoreSaveData）は実際のファイルを触るのでテストしない
 // （CubelithSaveGame.h の「解釈:」。エディタの Saved/ を汚さないため）。
 
@@ -451,6 +453,113 @@ bool FCubelithSaveCoreConversionTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Orientation"), Core.Orientation, 23);
 	TestTrue(TEXT("Position"), Core.Position == Cubelith::Vec3(-4, 2, 7));
 	TestTrue(TEXT("往復して元に戻る"), Cubelith::ToSavedPlacement(Core) == Saved);
+
+	return true;
+}
+
+// 9. 今の盤面から保存する形を作る（MakeSavedProgress / CollectSavedLocks / ToCorePlacements）
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCubelithSaveMakeProgressTest, "CUBELITH.Render.Save.MakeProgress",
+	EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::ProductFilter)
+
+bool FCubelithSaveMakeProgressTest::RunTest(const FString& Parameters)
+{
+	using namespace CubelithRenderTests::SaveTestDetail;
+
+	// 実際に生成した盤面で試す（配置の並びと数がピースと 1 対 1 であること込みで確かめたい）
+	const Cubelith::FGeneratedPuzzle Puzzle = Cubelith::GeneratePuzzle(3, 4, 20260926);
+	Cubelith::FGame Game(Puzzle.Pieces, 3, Puzzle.Solution);
+
+	// 固定 2 つ（種類が違うもの）。LockedIds は昇順なので CollectSavedLocks も昇順になる
+	Game.Lock(2, Cubelith::ELockKind::Hint);
+	Game.Lock(0, Cubelith::ELockKind::Manual);
+
+	const TArray<FCubelithSavedLock> Locks = Cubelith::CollectSavedLocks(Game);
+	if (TestEqual(TEXT("固定の数"), Locks.Num(), 2))
+	{
+		TestEqual(TEXT("id 昇順の 0 番目"), Locks[0].PieceId, 0);
+		TestTrue(TEXT("0 番目は手動"), Locks[0].Kind == ECubelithSavedLockKind::Manual);
+		TestEqual(TEXT("id 昇順の 1 番目"), Locks[1].PieceId, 2);
+		TestTrue(TEXT("1 番目はヒント"), Locks[1].Kind == ECubelithSavedLockKind::Hint);
+	}
+
+	const FCubelithSavedProgress Progress = Cubelith::MakeSavedProgress(
+		Difficulty(3, 4, false), 20260926, Game.Placements(), Locks, /*Remaining=*/0);
+
+	TestTrue(TEXT("難易度"), Progress.Difficulty == Difficulty(3, 4, false));
+	TestEqual(TEXT("シードは int64 に入る"), Progress.Seed, static_cast<int64>(20260926));
+	TestEqual(TEXT("配置の数はピースの数"), Progress.Placements.Num(), Puzzle.Pieces.Num());
+	TestEqual(TEXT("固定の数"), Progress.Locks.Num(), 2);
+	TestEqual(TEXT("残りピース数"), Progress.Remaining, 0);
+	// 作ったものはそのまま検証を通り、生成したピースにも合う（= 読み直して復元できる形になっている）
+	TestTrue(TEXT("検証を通る"), Cubelith::IsValidSavedProgress(Progress));
+	TArray<int32> PieceIds;
+	for (const Cubelith::FPiece& Piece : Puzzle.Pieces)
+	{
+		PieceIds.Add(Piece.Id);
+	}
+	TestTrue(TEXT("生成したピースに合う"), Cubelith::ProgressFitsPieces(Progress, PieceIds));
+
+	// 保存された配置を初期配置へ戻すと元の配置と同じ（並びも保つ）
+	const TArray<Cubelith::FPlacement> Restored = Cubelith::ToCorePlacements(Progress.Placements);
+	if (TestEqual(TEXT("戻した配置の数"), Restored.Num(), Game.Placements().Num()))
+	{
+		for (int32 Index = 0; Index < Restored.Num(); ++Index)
+		{
+			const Cubelith::FPlacement& Expected = Game.Placements()[Index];
+			TestEqual(TEXT("id"), Restored[Index].PieceId, Expected.PieceId);
+			TestEqual(TEXT("向き"), Restored[Index].Orientation, Expected.Orientation);
+			TestTrue(TEXT("位置"), Restored[Index].Position == Expected.Position);
+		}
+	}
+
+	// 戻した配置はそのまま FGame の初期配置として使える（= 「続きから」で復元できる）
+	Cubelith::FGame Resumed(Puzzle.Pieces, 3, Restored);
+	TestTrue(TEXT("復元した盤面はクリア済み（解答配置で作ったので）"), Resumed.Solved());
+
+	// 固定が 1 つも無い盤面では空の配列になる
+	Cubelith::FGame Fresh(Puzzle.Pieces, 3, Puzzle.Solution);
+	TestEqual(TEXT("固定が無ければ空"), Cubelith::CollectSavedLocks(Fresh).Num(), 0);
+
+	return true;
+}
+
+// 10. 途中の盤面を覚える（SetProgress。「最後に選んだ難易度」もその盤面の難易度へ揃う）
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCubelithSaveSetProgressTest, "CUBELITH.Render.Save.SetProgress",
+	EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::ProductFilter)
+
+bool FCubelithSaveSetProgressTest::RunTest(const FString& Parameters)
+{
+	using namespace CubelithRenderTests::SaveTestDetail;
+
+	// 別の難易度（N=4 / M=6 / 回転あり）で遊んでいたセーブに、N=3 / M=4 の盤面を入れる
+	FCubelithSaveData Data;
+	Data.Difficulty = Difficulty(4, 6, true);
+	Data.Clears.Total = 3;
+	Data.Clears.ByDifficulty.Add(TEXT("4-6-1"), 3);
+
+	Cubelith::SetProgress(Data, ValidProgress());
+
+	TestTrue(TEXT("途中の盤面がある"), Data.bHasProgress);
+	TestTrue(TEXT("最後に選んだ難易度が盤面の難易度に揃う"), Data.Difficulty == Difficulty(3, 4, false));
+	TestEqual(TEXT("盤面の残りピース数"), Data.Progress.Remaining, 2);
+	// クリア回数には触らない（RULES.md 3.8。数えるのはクリアしたときだけ）
+	TestEqual(TEXT("クリア回数の合計は変わらない"), Data.Clears.Total, 3);
+	TestEqual(TEXT("難易度ごとの回数も変わらない"), Cubelith::ClearCountOf(Data, Difficulty(4, 6, true)), 3);
+
+	// もう一度入れると**確認なしで上書きされる**（RULES.md 3.8）
+	FCubelithSavedProgress Next = ValidProgress();
+	Next.Seed = 777;
+	Next.Remaining = 1;
+	Cubelith::SetProgress(Data, Next);
+	TestEqual(TEXT("上書きされたシード"), Data.Progress.Seed, static_cast<int64>(777));
+	TestEqual(TEXT("上書きされた残りピース数"), Data.Progress.Remaining, 1);
+
+	// クリアすると回数が増えて途中の盤面が消える（RecordClear。ここは 5. と繋がる振る舞いの確認）
+	Cubelith::RecordClear(Data, Difficulty(3, 4, false));
+	TestFalse(TEXT("クリアで途中の盤面が消える"), Data.bHasProgress);
+	TestEqual(TEXT("クリアで合計が増える"), Data.Clears.Total, 4);
+	TestEqual(TEXT("クリアでその難易度の回数が増える"),
+		Cubelith::ClearCountOf(Data.Clears, Difficulty(3, 4, false)), 1);
 
 	return true;
 }

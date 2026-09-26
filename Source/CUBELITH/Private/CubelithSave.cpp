@@ -21,10 +21,15 @@ namespace Cubelith
 			Difficulty.SpaceSize, Difficulty.PieceCount, Difficulty.bAllowRotation ? 1 : 0);
 	}
 
+	int32 ClearCountOf(const FCubelithSavedClears& Clears, const FCubelithSavedDifficulty& Difficulty)
+	{
+		const int32* Found = Clears.ByDifficulty.Find(DifficultyKey(Difficulty));
+		return Found != nullptr ? *Found : 0;
+	}
+
 	int32 ClearCountOf(const FCubelithSaveData& Data, const FCubelithSavedDifficulty& Difficulty)
 	{
-		const int32* Found = Data.Clears.ByDifficulty.Find(DifficultyKey(Difficulty));
-		return Found != nullptr ? *Found : 0;
+		return ClearCountOf(Data.Clears, Difficulty);
 	}
 
 	void RecordClear(FCubelithSaveData& Data, const FCubelithSavedDifficulty& Difficulty)
@@ -190,5 +195,59 @@ namespace Cubelith
 		Result.Orientation = Placement.Orientation;
 		Result.Position = FIntVector(Placement.Position.X, Placement.Position.Y, Placement.Position.Z);
 		return Result;
+	}
+
+	TArray<FPlacement> ToCorePlacements(TArrayView<const FCubelithSavedPlacement> Placements)
+	{
+		TArray<FPlacement> Result;
+		Result.Reserve(Placements.Num());
+		for (const FCubelithSavedPlacement& Placement : Placements)
+		{
+			Result.Add(ToCorePlacement(Placement));
+		}
+		return Result;
+	}
+
+	TArray<FCubelithSavedLock> CollectSavedLocks(const FGame& Game)
+	{
+		TArray<FCubelithSavedLock> Result;
+		const TArray<int32> LockedIds = Game.LockedIds();
+		Result.Reserve(LockedIds.Num());
+		for (const int32 PieceId : LockedIds)
+		{
+			FCubelithSavedLock Lock;
+			Lock.PieceId = PieceId;
+			// LockedIds が返した id は必ず固定されているが、万一取りこぼしても
+			// 手動の固定として書く（TS の `?? 'manual'` と同じ）
+			Lock.Kind = ToSavedLockKind(Game.LockKindOf(PieceId).Get(ELockKind::Manual));
+			Result.Add(Lock);
+		}
+		return Result;
+	}
+
+	FCubelithSavedProgress MakeSavedProgress(
+		const FCubelithSavedDifficulty& Difficulty, uint32 Seed,
+		TArrayView<const FPlacement> Placements, TArrayView<const FCubelithSavedLock> Locks, int32 Remaining)
+	{
+		FCubelithSavedProgress Progress;
+		Progress.Difficulty = Difficulty;
+		Progress.Seed = static_cast<int64>(Seed);
+		Progress.Placements.Reserve(Placements.Num());
+		for (const FPlacement& Placement : Placements)
+		{
+			Progress.Placements.Add(ToSavedPlacement(Placement));
+		}
+		Progress.Locks.Append(Locks.GetData(), Locks.Num());
+		Progress.Remaining = Remaining;
+		return Progress;
+	}
+
+	void SetProgress(FCubelithSaveData& Data, const FCubelithSavedProgress& Progress)
+	{
+		// 難易度が決まるのは盤面を始めたとき（RULES.md 3.8）。TS の withProgress と同じく、
+		// 盤面を書くときに「最後に選んだ難易度」もその盤面の難易度へ揃える
+		Data.Difficulty = Progress.Difficulty;
+		Data.bHasProgress = true;
+		Data.Progress = Progress;
 	}
 }
