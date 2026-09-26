@@ -19,7 +19,9 @@
 
 namespace Cubelith
 {
-	namespace
+	// このファイルだけで使うヘルパ。unity ビルドでは他の .cpp と同じ翻訳単位に入るので、名前をこの中に閉じる
+	// （素の無名 namespace だと CubelithCoords.cpp の同名の表と衝突する）
+	namespace FreeRotationDetail
 	{
 		/**
 		 * 置換 P に対応する添字の読み替え（0 → 0, 1 → 2, 2 → 1）。
@@ -58,7 +60,9 @@ namespace Cubelith
 			{
 				// R_logic(Row, Col) = R_UE(SwapAxis[Row], SwapAxis[Col])、
 				// かつ R_UE(i, j) = WorldMatrix.M[j][i]（FMatrix は転置して持っている）
-				Result[Row * 3 + Col] = WorldMatrix.M[SwapAxis[Col]][SwapAxis[Row]];
+				const int32 SwappedRow = FreeRotationDetail::SwapAxis[Row];
+				const int32 SwappedCol = FreeRotationDetail::SwapAxis[Col];
+				Result[Row * 3 + Col] = WorldMatrix.M[SwappedCol][SwappedRow];
 			}
 		}
 
@@ -83,7 +87,7 @@ namespace Cubelith
 
 		// 「向き Logic で置いたピースを、あとから Free で回した」姿勢 = Free · Logic（左から掛ける）
 		double Composed[9];
-		Multiply3x3(Free.GetData(), LogicValues, Composed);
+		FreeRotationDetail::Multiply3x3(Free.GetData(), LogicValues, Composed);
 
 		return NearestOrientation(TArrayView<const double>(Composed, 9));
 	}
