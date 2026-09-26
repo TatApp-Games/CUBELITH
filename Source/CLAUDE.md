@@ -22,7 +22,8 @@ pwsh -NoProfile -File Scripts/OpenEditor.ps1                         エディ�
 - **エディタを開いたままだと Build / Test はビルドで失敗する**（Live Coding）。エディタを閉じてから実行する
 - Test は失敗が 1 件でもあるか、テストが 1 件も見つからなければ終了コード 1。結果は `Saved/Automation/CommandLine/`（`Report/index.json` とログ `Test.log`）
 - エンジンの場所は `.uproject` の `EngineAssociation`（`"5.8"`）からレジストリで引く。別の場所にあるなら環境変数 `UE_ROOT` で指定する
-- エディタはプロジェクト選択画面から開かない。このエンジンは自分を Launcher 版の `"5.8"` と認識できておらず、選択画面から開くと「プロジェクトを変換」を求めてくる（変換すると `EngineAssociation` がこの PC でしか通じない GUID に書き換わる）。`Scripts/OpenEditor.ps1` はプロジェクトのパスを渡して起動するので出ない
+- エディタは Launcher・`.uproject` のダブルクリック・`Scripts/OpenEditor.ps1` のどれから開いてもよい。**「プロジェクトを変換」を求められたら変換しない**（`EngineAssociation` がこの PC でしか通じない GUID に書き換わる）。出るのはエンジンが自分を `"5.8"` と認識できていないときで、原因は Launcher の一覧 `C:\ProgramData\Epic\UnrealEngineLauncher\LauncherInstalled.dat` に `UE_5.8` が無いこと（2026-09-26 に手で足して直した）
+- コミットの前に `EngineAssociation` が `"5.8"` のままか確かめる。GUID になっていたら `"5.8"` に戻す
 
 ## ディレクトリ
 

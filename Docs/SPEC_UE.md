@@ -111,7 +111,9 @@ WebMock/                  Web 版（参照実装と照合データの出どこ�
 
 ### 7.6 エディタの MCP
 
-- UE 5.8 同梱の Unreal MCP（プラグイン `ModelContextProtocol`）と、ツールを提供する `AllToolsets` を使う。どちらも実験的な機能で、`.uproject` でエディタのターゲットだけに有効にしている（ゲームのビルドには入れない）
+- UE 5.8 同梱の Unreal MCP（プラグイン `ModelContextProtocol`）と、ツールを提供するツールセットのプラグインを使う。どれも実験的な機能で、`.uproject` でエディタのターゲットだけに有効にしている（ゲームのビルドには入れない）
+  - ツールセットは使うものだけを有効にする: `EditorToolset`（アクタ・プロパティ・ビューポート・PIE・ログ）・`AutomationTestToolset`・`ConfigSettingsToolset`・`UMGToolSet`・`NiagaraToolsets`・`SlateInspectorToolset`
+  - 全部入りの `AllToolsets` は使わない（ゲーム機能・GAS・PCG なども有効になり、ゲーム機能の設定が無いという警告がエディタの起動のたびに出る）
 - サーバーはエディタの中で動き、エディタを開くと自動で起動する（`Config/DefaultEditorPerProjectUserSettings.ini` の `bAutoStartServer`）。接続先は `http://127.0.0.1:8000/mcp`（`.mcp.json`）。認証は無く、ループバックからしか受け付けない
 - エディタが開いているときだけ使える。そのため Auto_Tasks のタスクの完了条件（verify）には使わず、対話のセッションで補助に使う
 - MCP で AI がアセットを変えても、`.uasset` の差分は読めない。「`.uasset` は人が作る」（0 章）は変えない
