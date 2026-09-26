@@ -20,7 +20,7 @@ class ACubelithPuzzleActor;
  * ACubelithPuzzleActor に描かせて軌道カメラを合わせる。
  *
  * 難易度の選択・HUD・「次の問題」は U4 で足す。ここではエディタから差し替えられる既定値として持つ。
- * PlayerController と HUD は既定のまま使う。
+ * PlayerController は ACubelithPlayerController（ピースの選択。U3）、HUD は既定のまま使う。
  */
 UCLASS()
 class CUBELITH_API ACubelithGameMode : public AGameModeBase
@@ -29,6 +29,15 @@ class CUBELITH_API ACubelithGameMode : public AGameModeBase
 
 public:
 	ACubelithGameMode();
+
+	/**
+	 * ゲーム状態（RULES.md 3.3 / 3.4）。まだ作られていなければ nullptr。
+	 * 所有権は GameMode のまま（TUniquePtr で持つ）なので、呼び出し側は寿命を持たない生ポインタとして読む
+	 */
+	Cubelith::FGame* GetGame() const { return Game.Get(); }
+
+	/** ピースを描くアクタ。まだ湧いていなければ nullptr */
+	ACubelithPuzzleActor* GetPuzzleActor() const { return PuzzleActor; }
 
 	/** 空間サイズ N（RULES.md 3.1。既定 3） */
 	UPROPERTY(EditAnywhere, Category = "Cubelith|Puzzle", meta = (ClampMin = "3", ClampMax = "7"))
