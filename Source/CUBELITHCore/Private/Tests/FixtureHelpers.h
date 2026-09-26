@@ -9,6 +9,7 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "Dom/JsonObject.h"
+#include "Piece.h"
 
 namespace CubelithCoreTests
 {
@@ -38,6 +39,21 @@ namespace CubelithCoreTests
 	 * 内側の要素数が ExpectedInnerNum でなければ失敗させる。
 	 */
 	bool ReadInt32ArrayOfArrays(const TSharedPtr<FJsonObject>& Object, const FString& FieldName, int32 ExpectedInnerNum, TArray<TArray<int32>>& OutValues, FString& OutError);
+
+	/**
+	 * JSON の値が [x, y, z] の 3 要素配列なら FVec3 として読む（Docs/FIXTURES.md「共通の表し方」）。
+	 * What はずれたときのメッセージに出す場所の名前（例 "pieces[0].voxels[2]"）。
+	 */
+	bool ReadVec3(const TSharedPtr<FJsonValue>& Value, const FString& What, Cubelith::FVec3& OutVec3, FString& OutError);
+
+	/** Object の FieldName が [x, y, z] の配列（pieces[].voxels のような並び）なら TArray<FVec3> として読む */
+	bool ReadVec3Array(const TSharedPtr<FJsonObject>& Object, const FString& FieldName, TArray<Cubelith::FVec3>& OutVec3s, FString& OutError);
+
+	/** JSON の値が { "pieceId", "orientation", "position" } なら FPlacement として読む（Docs/FIXTURES.md「共通の表し方」） */
+	bool ReadPlacement(const TSharedPtr<FJsonValue>& Value, const FString& What, Cubelith::FPlacement& OutPlacement, FString& OutError);
+
+	/** Object の FieldName が配置の配列（solution・scatter のような並び）なら TArray<FPlacement> として読む */
+	bool ReadPlacementArray(const TSharedPtr<FJsonObject>& Object, const FString& FieldName, TArray<Cubelith::FPlacement>& OutPlacements, FString& OutError);
 }
 
 #endif // WITH_DEV_AUTOMATION_TESTS
