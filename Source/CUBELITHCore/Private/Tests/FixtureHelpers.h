@@ -32,6 +32,12 @@ namespace CubelithCoreTests
 
 	/** JSON の数値配列を int32 で読む */
 	bool ReadInt32Array(const TSharedPtr<FJsonObject>& Object, const FString& FieldName, TArray<int32>& OutValues, FString& OutError);
+
+	/**
+	 * JSON の「数値配列の配列」を int32 で読む（orientations.json の matrices のように行優先 9 要素の並びが続くもの）。
+	 * 内側の要素数が ExpectedInnerNum でなければ失敗させる。
+	 */
+	bool ReadInt32ArrayOfArrays(const TSharedPtr<FJsonObject>& Object, const FString& FieldName, int32 ExpectedInnerNum, TArray<TArray<int32>>& OutValues, FString& OutError);
 }
 
 #endif // WITH_DEV_AUTOMATION_TESTS
