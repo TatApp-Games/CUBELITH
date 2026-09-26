@@ -44,6 +44,30 @@ namespace CubelithCoreTests
 
 			return true;
 		}
+
+		// JSON の 1 要素を int32 として取り出す（[x, y, z] の成分のように、配列の中の数値を 1 つずつ読むとき）
+		bool ReadInt32Component(const TSharedPtr<FJsonValue>& Value, const FString& What, int32& OutValue, FString& OutError)
+		{
+			OutValue = 0;
+
+			double Number = 0.0;
+			if (!Value.IsValid() || !Value->TryGetNumber(Number))
+			{
+				OutError = FString::Printf(TEXT("%s が数値でない"), *What);
+				return false;
+			}
+
+			// 照合データの数値は整数だけ（Docs/FIXTURES.md）。double からの取りこぼしを避けて丸めてから整数にする
+			const int64 Rounded = FMath::RoundToInt64(Number);
+			if (Rounded < static_cast<int64>(MIN_int32) || Rounded > static_cast<int64>(MAX_int32))
+			{
+				OutError = FString::Printf(TEXT("%s が int32 に入らない: %lld"), *What, Rounded);
+				return false;
+			}
+
+			OutValue = static_cast<int32>(Rounded);
+			return true;
+		}
 	}
 
 	FString GetFixturesDir()
@@ -203,6 +227,144 @@ namespace CubelithCoreTests
 				return false;
 			}
 			OutValues.Add(static_cast<int32>(Number));
+		}
+
+		return true;
+	}
+
+	bool ReadVec3(const TSharedPtr<FJsonValue>& Value, const FString& What, Cubelith::FVec3& OutVec3, FString& OutError)
+	{
+		OutVec3 = Cubelith::Vec3(0, 0, 0);
+
+		const TArray<TSharedPtr<FJsonValue>>* Components = nullptr;
+		if (!Value.IsValid() || !Value->TryGetArray(Components) || Components == nullptr)
+		{
+			OutError = FString::Printf(TEXT("%s が配列として読めない"), *What);
+			return false;
+		}
+		if (Components->Num() != 3)
+		{
+			OutError = FString::Printf(TEXT("%s の要素数が 3 でない: %d"), *What, Components->Num());
+			return false;
+		}
+
+		int32 Values[3] = { 0, 0, 0 };
+		for (int32 Index = 0; Index < 3; ++Index)
+		{
+			if (!ReadInt32Component((*Components)[Index], FString::Printf(TEXT("%s の %d 要素目"), *What, Index), Values[Index], OutError))
+			{
+				return false;
+			}
+		}
+
+		OutVec3 = Cubelith::Vec3(Values[0], Values[1], Values[2]);
+		return true;
+	}
+
+	bool ReadVec3Array(const TSharedPtr<FJsonObject>& Object, const FString& FieldName, TArray<Cubelith::FVec3>& OutVec3s, FString& OutError)
+	{
+		OutVec3s.Reset();
+
+		if (!Object.IsValid())
+		{
+			OutError = FString::Printf(TEXT("%s を読もうとしたが JSON が無効"), *FieldName);
+			return false;
+		}
+
+		const TArray<TSharedPtr<FJsonValue>>* Rows = nullptr;
+		if (!Object->TryGetArrayField(FieldName, Rows) || Rows == nullptr)
+		{
+			OutError = FString::Printf(TEXT("%s が配列として読めない"), *FieldName);
+			return false;
+		}
+
+		OutVec3s.Reserve(Rows->Num());
+		for (int32 Index = 0; Index < Rows->Num(); ++Index)
+		{
+			Cubelith::FVec3 Value;
+			if (!ReadVec3((*Rows)[Index], FString::Printf(TEXT("%s[%d]"), *FieldName, Index), Value, OutError))
+			{
+				OutVec3s.Reset();
+				return false;
+			}
+			OutVec3s.Add(Value);
+		}
+
+		return true;
+	}
+
+	bool ReadPlacement(const TSharedPtr<FJsonValue>& Value, const FString& What, Cubelith::FPlacement& OutPlacement, FString& OutError)
+	{
+		OutPlacement = Cubelith::FPlacement();
+
+		const TSharedPtr<FJsonObject>* Object = nullptr;
+		if (!Value.IsValid() || !Value->TryGetObject(Object) || Object == nullptr || !Object->IsValid())
+		{
+			OutError = FString::Printf(TEXT("%s がオブジェクトとして読めない"), *What);
+			return false;
+		}
+
+		// キーは pieceId・orientation・position の 3 つ（Docs/FIXTURES.md「共通の表し方」）
+		int32 PieceId = 0;
+		if (!(*Object)->TryGetNumberField(TEXT("pieceId"), PieceId))
+		{
+			OutError = FString::Printf(TEXT("%s に pieceId が無い"), *What);
+			return false;
+		}
+
+		int32 Orientation = 0;
+		if (!(*Object)->TryGetNumberField(TEXT("orientation"), Orientation))
+		{
+			OutError = FString::Printf(TEXT("%s に orientation が無い"), *What);
+			return false;
+		}
+
+		const TSharedPtr<FJsonValue>* PositionValue = (*Object)->Values.Find(TEXT("position"));
+		if (PositionValue == nullptr)
+		{
+			OutError = FString::Printf(TEXT("%s に position が無い"), *What);
+			return false;
+		}
+
+		Cubelith::FVec3 Position;
+		if (!ReadVec3(*PositionValue, FString::Printf(TEXT("%s.position"), *What), Position, OutError))
+		{
+			return false;
+		}
+
+		OutPlacement.PieceId = PieceId;
+		OutPlacement.Orientation = Orientation;
+		OutPlacement.Position = Position;
+		return true;
+	}
+
+	bool ReadPlacementArray(const TSharedPtr<FJsonObject>& Object, const FString& FieldName, TArray<Cubelith::FPlacement>& OutPlacements, FString& OutError)
+	{
+		OutPlacements.Reset();
+
+		if (!Object.IsValid())
+		{
+			OutError = FString::Printf(TEXT("%s を読もうとしたが JSON が無効"), *FieldName);
+			return false;
+		}
+
+		const TArray<TSharedPtr<FJsonValue>>* Rows = nullptr;
+		if (!Object->TryGetArrayField(FieldName, Rows) || Rows == nullptr)
+		{
+			OutError = FString::Printf(TEXT("%s が配列として読めない"), *FieldName);
+			return false;
+		}
+
+		OutPlacements.Reserve(Rows->Num());
+		for (int32 Index = 0; Index < Rows->Num(); ++Index)
+		{
+			Cubelith::FPlacement Placement;
+			if (!ReadPlacement((*Rows)[Index], FString::Printf(TEXT("%s[%d]"), *FieldName, Index), Placement, OutError))
+			{
+				OutPlacements.Reset();
+				return false;
+			}
+			OutPlacements.Add(Placement);
 		}
 
 		return true;
