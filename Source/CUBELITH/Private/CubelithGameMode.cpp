@@ -6,6 +6,7 @@
 #include "Kismet/GameplayStatics.h"
 #include "Math/RandomStream.h"
 #include "Misc/CommandLine.h"
+#include "Misc/CoreDelegates.h"
 #include "Misc/DateTime.h"
 #include "Misc/Parse.h"
 #include "Sound/SoundBase.h"
@@ -24,6 +25,7 @@
 #include "CubelithSaveGame.h"
 #include "CubelithScreenWidget.h"
 #include "CubelithSeed.h"
+#include "CubelithTitleState.h"
 #include "CubelithTitleWidget.h"
 #include "Generate.h"
 #include "Hint.h"
@@ -129,6 +131,15 @@ void ACubelithGameMode::BeginPlay()
 {
 	Super::BeginPlay();
 
+	// セーブは**起動時に 1 回だけ読み**、以後はこの 1 つを持ち回して変更のたびに書く（RULES.md 3.8）。
+	// スロットの有無はタイトルの初期選択の分かれ目（セーブの難易度 > UPROPERTY の既定）なので先に覚える
+	bLoadedFromSlot =
+		UGameplayStatics::DoesSaveGameExist(FString(Cubelith::SaveSlotName), Cubelith::SaveUserIndex);
+	SaveData = Cubelith::LoadSaveData();
+
+	// アプリが裏に回るときにも書く（モバイルでは裏に回ったアプリが OS に終了させられることがある）
+	RegisterLifecycleDelegates();
+
 	// 起動時はタイトルを出す（パズルは「開始」を押してから作る。RULES.md 2 章のコアゲームループ 1）。
 	// 初期選択は 外部指定（Docs/SPEC_UE.md 7.7）> セーブの「最後に選んだ難易度」> UPROPERTY の既定 の順で、
 	// シードは外部指定があればそれ、無ければ引き直し（シードは保存しない。RULES.md 3.8）
@@ -140,6 +151,10 @@ void ACubelithGameMode::BeginPlay()
 
 void ACubelithGameMode::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	// **解除漏れが無いよう、畳むより先に外す**（FCoreDelegates は GameMode より長生きするので、
+	// 残したままだと消えた GameMode を呼びに行く）
+	UnregisterLifecycleDelegates();
+
 	// セッション（タイマー・ピースのアクタ・FGame・クリアの状態）をまとめて畳む。
 	// FGame の OnChange は弱参照越しなので、畳む前に呼ばれても消えた GameMode / アクタには触らない
 	EndSession();
@@ -184,13 +199,25 @@ void ACubelithGameMode::ShowTitle(int32 N, int32 M, bool bInAllowRotation, uint3
 	}
 
 	Title->SetInitialSelection(LastSpaceSize, LastPieceCount, bLastAllowRotation, TitleSeed);
+
+	// 途中の盤面（RULES.md 3.8）があれば「続きから」を出す。タイトルにいる間はセーブが変わらないので、
+	// 画面を作った時点の値をそのまま渡してよい（Web 版 main.ts の showTitle と同じ）
+	Title->SetResume(SaveData.bHasProgress
+		? TOptional<Cubelith::FTitleResume>(Cubelith::MakeTitleResume(SaveData.Progress))
+		: TOptional<Cubelith::FTitleResume>());
+	// クリア回数（RULES.md 6 章）。「この難易度」の回数は画面が選択に合わせて引き直す
+	Title->SetClearCounts(SaveData.Clears);
+
 	// 「開始」で押された時点の選択を受け取る（画面は値を持つだけで、セッションを作るのはこの GameMode）
 	Title->OnStart.BindUObject(this, &ACubelithGameMode::HandleTitleStart);
+	// 「続きから」は保存された盤面の難易度とシードで開き直す（タイトルでの選択より保存された盤面が優先）
+	Title->OnResume.BindUObject(this, &ACubelithGameMode::HandleTitleResume);
 	Title->AddToViewport();
 
 	UE_LOG(LogCubelith, Log,
-		TEXT("タイトル / 難易度選択画面を出した: 初期選択 N=%d, M=%d, パズルの回転=%s, seed=%u"),
-		LastSpaceSize, LastPieceCount, bLastAllowRotation ? TEXT("あり") : TEXT("なし"), TitleSeed);
+		TEXT("タイトル / 難易度選択画面を出した: 初期選択 N=%d, M=%d, パズルの回転=%s, seed=%u, 続きから=%s"),
+		LastSpaceSize, LastPieceCount, bLastAllowRotation ? TEXT("あり") : TEXT("なし"), TitleSeed,
+		SaveData.bHasProgress ? TEXT("あり") : TEXT("なし"));
 }
 
 void ACubelithGameMode::ReturnToTitle()
@@ -200,6 +227,29 @@ void ACubelithGameMode::ReturnToTitle()
 }
 
 void ACubelithGameMode::StartSession(int32 N, int32 M, bool bInAllowRotation, uint32 InSeed)
+{
+	// 新しい盤面は途中の盤面を**確認なしで上書きする**（RULES.md 3.8）。上書きするのは StartSessionWith
+	StartSessionWith(N, M, bInAllowRotation, InSeed, /*Restore=*/nullptr);
+}
+
+void ACubelithGameMode::ResumeSession(FCubelithSavedProgress Progress)
+{
+	// Seed は読み込み時の検証（Cubelith::IsValidSavedProgress）で 0..4294967295 に収まっているが、
+	// 直に呼ばれても落ちないようここでも丸める
+	const uint32 ResumeSeed =
+		static_cast<uint32>(FMath::Clamp<int64>(Progress.Seed, Cubelith::MinSeedValue, Cubelith::MaxSeedValue));
+
+	UE_LOG(LogCubelith, Log,
+		TEXT("「続きから」: 保存された盤面を開き直す（N=%d, M=%d, パズルの回転=%s, seed=%u, 残り %d ピース）"),
+		Progress.Difficulty.SpaceSize, Progress.Difficulty.PieceCount,
+		Progress.Difficulty.bAllowRotation ? TEXT("あり") : TEXT("なし"), ResumeSeed, Progress.Remaining);
+
+	StartSessionWith(Progress.Difficulty.SpaceSize, Progress.Difficulty.PieceCount,
+		Progress.Difficulty.bAllowRotation, ResumeSeed, &Progress);
+}
+
+void ACubelithGameMode::StartSessionWith(int32 N, int32 M, bool bInAllowRotation, uint32 InSeed,
+	const FCubelithSavedProgress* Restore)
 {
 	UWorld* const World = GetWorld();
 	if (World == nullptr)
@@ -226,12 +276,45 @@ void ACubelithGameMode::StartSession(int32 N, int32 M, bool bInAllowRotation, ui
 	// （後続タスクのヒントが Solution を、散らし直しが同じシードを読む）
 	SessionPuzzle = Cubelith::GeneratePuzzle(SessionN, SessionM, InSeed);
 
+	// 保存された盤面から再開できるか（RULES.md 3.8）。**復元できない盤面**（生成規則が変わって
+	// ピース id が食い違うなど）は諦めて通常の散らしで始める。Cubelith::FGame と同じ条件を先に見ることで、
+	// checkf に落とさずに済む（Web 版 main.ts の progressFitsPieces と同じ）
+	TArray<int32> PieceIds;
+	PieceIds.Reserve(SessionPuzzle.Pieces.Num());
+	for (const Cubelith::FPiece& Piece : SessionPuzzle.Pieces)
+	{
+		PieceIds.Add(Piece.Id);
+	}
+	const bool bRestored = (Restore != nullptr) && Cubelith::ProgressFitsPieces(*Restore, PieceIds);
+	if (Restore != nullptr && !bRestored)
+	{
+		UE_LOG(LogCubelith, Warning,
+			TEXT("保存された盤面が今のピース（%d 個）と合わないので、通常の散らしで始める（RULES.md 3.8）"),
+			PieceIds.Num());
+	}
+
 	// 初期散らし（RULES.md 3.2-5）。まだ固定は何も無いので Keep は空
 	// （ヒントで固定したピースを残すのは散らし直し。ScatterAgain が同じシードで呼び直す）
-	Cubelith::FScatterOptions ScatterOptions;
-	ScatterOptions.bAllowRotation = bInAllowRotation;
-	const TArray<Cubelith::FPlacement> Scattered =
-		Cubelith::ScatterPlacements(SessionPuzzle.Pieces, SessionN, InSeed, ScatterOptions);
+	TArray<Cubelith::FPlacement> Scattered;
+	// 復元するときは散らす代わりに保存された配置をそのまま初期配置にする
+	TArray<FCubelithSavedLock> InitialLocks;
+	if (bRestored)
+	{
+		Scattered = Cubelith::ToCorePlacements(Restore->Placements);
+		InitialLocks = Restore->Locks;
+	}
+	else
+	{
+		Cubelith::FScatterOptions ScatterOptions;
+		ScatterOptions.bAllowRotation = bInAllowRotation;
+		Scattered = Cubelith::ScatterPlacements(SessionPuzzle.Pieces, SessionN, InSeed, ScatterOptions);
+	}
+
+	// 「開始」「続きから」で難易度を確定させ、新しい盤面はここで**確認なしに**上書きする（RULES.md 3.8）。
+	// 解釈: タイトルで選択を変えただけでは保存しない（押さずに閉じた選択まで覚えると表示が紛れる）。
+	// ここから先は Restore の中身が SaveData と同じ値でも構わない（ResumeSession が写しを持っている）
+	SaveProgress(Scattered, InitialLocks,
+		Cubelith::UnsettledPieceCount(SessionPuzzle.Pieces, Scattered, SessionN));
 
 	// 配置が変わったら描画に反映する（Game.h の設計どおり）。FGame の寿命は GameMode のメンバとして持つが、
 	// コールバックが GameMode より長生きしても壊れないよう弱参照で握る
@@ -255,6 +338,10 @@ void ACubelithGameMode::StartSession(int32 N, int32 M, bool bInAllowRotation, ui
 			Self->OnPlacementsChanged.Broadcast(Placements);
 			// 残りピース数とヒントが使えるか（RULES.md 6 章 / 3.7）は配置で変わるので HUD も揃える
 			Self->RefreshHud();
+			// 配置が変わったのでセーブを更新する（RULES.md 3.8）。1 グリッド分の移動ごとに来る程度の
+			// 頻度なので毎回書いてよい。クリアした盤面は書かない（上の HandleSolvedChanged が
+			// クリア回数を記録して途中の盤面を消しているので、SaveBoard が自分で見送る）
+			Self->SaveBoard();
 		});
 
 	// ピースを描くアクタ。原点に置くので、アクタの原点 = 解答空間の中心 = 軌道カメラの注視点になる
@@ -274,8 +361,27 @@ void ACubelithGameMode::StartSession(int32 N, int32 M, bool bInAllowRotation, ui
 	PuzzleActor->Build(Game->Pieces(), SessionN);
 	PuzzleActor->UpdatePlacements(Game->Placements());
 
-	UE_LOG(LogCubelith, Log, TEXT("パズルを開始した: N=%d, M=%d, パズルの回転=%s, seed=%u, ピース数=%d"),
-		SessionN, SessionM, bInAllowRotation ? TEXT("あり") : TEXT("なし"), InSeed, SessionPuzzle.Pieces.Num());
+	// 保存された固定を復元する（RULES.md 3.8）。Lock は配置を変えない ＝ OnChange は呼ばれないので、
+	// 鍵アイコンは RefreshLockIcons で自分で揃える（ToggleLock / ScatterAgain と同じ理由）
+	if (bRestored)
+	{
+		for (const FCubelithSavedLock& Lock : InitialLocks)
+		{
+			// 未知のピース id を渡すと FGame が checkf に落ちる。ProgressFitsPieces を通っていれば
+			// ここは必ず見つかるが、手で書き換えられた場合の最後の砦として見る
+			if (Game->PlacementOf(Lock.PieceId) == nullptr)
+			{
+				continue;
+			}
+			Game->Lock(Lock.PieceId, Cubelith::ToCoreLockKind(Lock.Kind));
+		}
+		RefreshLockIcons();
+	}
+
+	UE_LOG(LogCubelith, Log,
+		TEXT("パズルを開始した: N=%d, M=%d, パズルの回転=%s, seed=%u, ピース数=%d, 復元=%s"),
+		SessionN, SessionM, bInAllowRotation ? TEXT("あり") : TEXT("なし"), InSeed, SessionPuzzle.Pieces.Num(),
+		bRestored ? TEXT("保存された盤面") : TEXT("なし（散らした）"));
 
 	// 軌道カメラの距離合わせはセッションを作るたびに掛け直す（N が変われば収める大きさも変わる）
 	StartFrameCamera();
@@ -364,6 +470,8 @@ void ACubelithGameMode::ToggleLock(int32 PieceId)
 	}
 	// 固定のラベル（固定 / 固定解除）と回転モードのトグルを押せるかが変わる（RULES.md 6 章）
 	RefreshHud();
+	// 固定 / 固定解除は配置を変えない ＝ FGame の OnChange が来ないので、ここでセーブを書く（RULES.md 3.8）
+	SaveBoard();
 
 	UE_LOG(LogCubelith, Log, TEXT("ピース %d を%s（RULES.md 3.3）"),
 		PieceId, (Action == Cubelith::ELockToggleAction::Lock) ? TEXT("手動で固定した") : TEXT("固定解除した"));
@@ -423,6 +531,9 @@ void ACubelithGameMode::UseHint()
 	// ヒントを使うと未固定が 1 つ減る ＝ ボタンが使えなくなることがある（RULES.md 3.7）。
 	// 選択中のピースをヒントで固定したときは「固定解除」も押せなくなる（RULES.md 6 章）
 	RefreshHud();
+	// Place の OnChange で配置は書かれているが、その後に付けた固定もここで書く（RULES.md 3.8）。
+	// ヒントで最後のずれが埋まってクリアした直後にもここへ来る（SaveBoard が見送る）
+	SaveBoard();
 
 	UE_LOG(LogCubelith, Log,
 		TEXT("ヒントでピース %d を解答へ送って固定した: 向き %d, 位置 (%d, %d, %d)（RULES.md 3.7）"),
@@ -475,6 +586,8 @@ void ACubelithGameMode::ScatterAgain()
 	RefreshLockIcons();
 	// 選択が外れ固定も解けたので HUD も揃える（Reset の OnChange では固定の解除が反映済みか見えない）
 	RefreshHud();
+	// Reset の OnChange でも書かれるが、そこでは手動の固定が解けた後か読み手に見えないので明示して書く
+	SaveBoard();
 
 	UE_LOG(LogCubelith, Log, TEXT("散らし直した: seed=%u, ヒントで残したピース=%d 個（RULES.md 3.3）"),
 		SessionPuzzle.Seed, ScatterOptions.Keep.Num());
@@ -597,6 +710,8 @@ void ACubelithGameMode::EndSession()
 	// クリアの状態を落とす（次のセッションでもう一度クリアしたときに、変わり目としてまた拾えるように）。
 	// 画面はここでは切り替えない（呼び出し元の ShowTitle / StartSession が続けて切り替える）
 	HandleSolvedChanged(false);
+	// 「このセッションでクリアを記録した」も落とす（次の盤面は普通に途中の盤面として書く）
+	bClearRecorded = false;
 
 	// FGame を先に畳む（OnChange からピースのアクタを触るので、アクタを消す前に止める）
 	Game.Reset();
@@ -679,8 +794,22 @@ TSubclassOf<UCubelithScreenWidget> ACubelithGameMode::GetScreenWidgetClass(ECube
 
 void ACubelithGameMode::HandleTitleStart(const FCubelithTitleSelection& Selection)
 {
-	// タイトルで選ばれている値で始める（外部指定は初期選択にだけ効く。Docs/SPEC_UE.md 7.7）
+	// タイトルで選ばれている値で始める（外部指定は初期選択にだけ効く。Docs/SPEC_UE.md 7.7）。
+	// 途中の盤面は確認なしで上書きされる（RULES.md 3.8）
 	StartSession(Selection.SpaceSize, Selection.PieceCount, Selection.bAllowRotation, Selection.Seed);
+}
+
+void ACubelithGameMode::HandleTitleResume()
+{
+	if (!SaveData.bHasProgress)
+	{
+		// 途中の盤面が無ければ「続きから」を出していないので普通は来ない
+		UE_LOG(LogCubelith, Warning, TEXT("途中の盤面が無いのに「続きから」が押された"));
+		return;
+	}
+
+	// 盤面の難易度とシードで開き直す（タイトルでの選択ではなく、**保存された盤面が優先**。RULES.md 3.8）
+	ResumeSession(SaveData.Progress);
 }
 
 uint32 ACubelithGameMode::ResolveSeed()
@@ -719,12 +848,12 @@ Cubelith::FDifficultyResolution ACubelithGameMode::ResolveDifficulty()
 	int32 DefaultSpaceSize = SpaceSize;
 	int32 DefaultPieceCount = PieceCount;
 	bool bDefaultAllowRotation = bAllowRotation;
-	if (UGameplayStatics::DoesSaveGameExist(FString(Cubelith::SaveSlotName), Cubelith::SaveUserIndex))
+	// 読むのは BeginPlay が読み込んだメモリ上の 1 つ（RULES.md 3.8。ここで読み直さない）
+	if (bLoadedFromSlot)
 	{
-		const FCubelithSaveData Saved = Cubelith::LoadSaveData();
-		DefaultSpaceSize = Saved.Difficulty.SpaceSize;
-		DefaultPieceCount = Saved.Difficulty.PieceCount;
-		bDefaultAllowRotation = Saved.Difficulty.bAllowRotation;
+		DefaultSpaceSize = SaveData.Difficulty.SpaceSize;
+		DefaultPieceCount = SaveData.Difficulty.PieceCount;
+		bDefaultAllowRotation = SaveData.Difficulty.bAllowRotation;
 
 		UE_LOG(LogCubelith, Log,
 			TEXT("セーブの「最後に選んだ難易度」を初期選択の既定にする: N=%d, M=%d, パズルの回転=%s"),
@@ -836,6 +965,93 @@ bool ACubelithGameMode::TryFrameCamera()
 	return false;
 }
 
+void ACubelithGameMode::PersistSave()
+{
+	// 書けなくても遊びは続けられる（StoreSaveData が警告を 1 行出すだけ）。メモリ上の 1 つはもう新しい
+	Cubelith::StoreSaveData(SaveData);
+}
+
+FCubelithSavedDifficulty ACubelithGameMode::SessionDifficulty() const
+{
+	FCubelithSavedDifficulty Difficulty;
+	Difficulty.SpaceSize = GetSessionSpaceSize();
+	Difficulty.PieceCount = GetSessionPieceCount();
+	Difficulty.bAllowRotation = bSessionAllowRotation;
+	return Difficulty;
+}
+
+void ACubelithGameMode::SaveProgress(TArrayView<const Cubelith::FPlacement> Placements,
+	TArrayView<const FCubelithSavedLock> Locks, int32 Remaining)
+{
+	// SetProgress が「最後に選んだ難易度」もこの盤面の難易度へ揃える（RULES.md 3.8。TS の withProgress）
+	Cubelith::SetProgress(SaveData, Cubelith::MakeSavedProgress(
+		SessionDifficulty(), GetSessionSeed(), Placements, Locks, Remaining));
+	PersistSave();
+}
+
+void ACubelithGameMode::SaveBoard()
+{
+	if (!Game.IsValid())
+	{
+		// セッションが無い（タイトル / セッションを畳んだ後）。書く盤面そのものが無い
+		return;
+	}
+	if (bClearRecorded)
+	{
+		// クリアした盤面は「続きから」に出さない（RULES.md 3.8）。ShowClear が回数を記録して
+		// 途中の盤面を消しているので、ここで書き戻さない（TS の saveBoard の `if (finished) return`）。
+		// bSolved ではなくこちらを見る理由はヘッダの bClearRecorded の説明
+		return;
+	}
+
+	const TArrayView<const Cubelith::FPlacement> Placements = Game->Placements();
+	SaveProgress(Placements, Cubelith::CollectSavedLocks(*Game),
+		Cubelith::UnsettledPieceCount(Game->Pieces(), Placements, Game->N()));
+}
+
+void ACubelithGameMode::HandleApplicationPause()
+{
+	// 盤面が変わるたびに書いてあるので普段は同じ内容になるが、取りこぼしが無いようここでも書く
+	// （Docs/SPEC_UE.md 4 章の「セーブ」節）。セッションが無ければ SaveBoard が何もしない
+	SaveBoard();
+}
+
+void ACubelithGameMode::RegisterLifecycleDelegates()
+{
+	// 解除漏れを避けるため、同じ口に二重に乗らないよう先に外す（BeginPlay は 1 回しか来ないはずだが、
+	// レベルを開き直す経路が増えたときに事故らないようにしておく）
+	UnregisterLifecycleDelegates();
+
+	// AddUObject にしてあるので、万一解除し忘れても消えた GameMode は呼ばれない（弱参照）。
+	// それでも EndPlay で必ず外す（残っていると畳んだ後の呼び出しが 1 回通ってしまう）
+	WillDeactivateHandle =
+		FCoreDelegates::ApplicationWillDeactivateDelegate.AddUObject(this, &ACubelithGameMode::HandleApplicationPause);
+	WillEnterBackgroundHandle =
+		FCoreDelegates::ApplicationWillEnterBackgroundDelegate.AddUObject(this, &ACubelithGameMode::HandleApplicationPause);
+	// 終了の通知はモバイルでは来ないことがある（エンジンのコメント）。来る環境のための保険として足す
+	WillTerminateHandle =
+		FCoreDelegates::GetApplicationWillTerminateDelegate().AddUObject(this, &ACubelithGameMode::HandleApplicationPause);
+}
+
+void ACubelithGameMode::UnregisterLifecycleDelegates()
+{
+	if (WillDeactivateHandle.IsValid())
+	{
+		FCoreDelegates::ApplicationWillDeactivateDelegate.Remove(WillDeactivateHandle);
+		WillDeactivateHandle.Reset();
+	}
+	if (WillEnterBackgroundHandle.IsValid())
+	{
+		FCoreDelegates::ApplicationWillEnterBackgroundDelegate.Remove(WillEnterBackgroundHandle);
+		WillEnterBackgroundHandle.Reset();
+	}
+	if (WillTerminateHandle.IsValid())
+	{
+		FCoreDelegates::GetApplicationWillTerminateDelegate().Remove(WillTerminateHandle);
+		WillTerminateHandle.Reset();
+	}
+}
+
 void ACubelithGameMode::PlaySnapSound()
 {
 	if (SnapSound == nullptr)
@@ -874,6 +1090,14 @@ void ACubelithGameMode::HandleSolvedChanged(bool bInSolved)
 
 void ACubelithGameMode::ShowClear()
 {
+	// クリアを回数に数え、途中の盤面を忘れる（RULES.md 3.8。クリアした盤面は「続きから」に出さない）。
+	// ここへ来るのは HandleSolvedChanged が拾った**偽 → 真の変わり目だけ**なので、回数は二重に増えない。
+	// **画面を切り替えるより先に**書くので、この後に走る片付け（SetPieceInputEnabled が回転を確定させる →
+	// FGame の OnChange）で盤面が書き戻されることもない（bClearRecorded が立っていて SaveBoard が見送る）
+	bClearRecorded = true;
+	Cubelith::RecordClear(SaveData, SessionDifficulty());
+	PersistSave();
+
 	// ピースの操作を止める（RULES.md 5.2-4）。走っている回転モードのねじれとスナップの補間は
 	// この中で片付き、選択も外れる（クリアした形が歪んだまま・ずれたまま残らないように）。
 	// 解釈: 止めるのはピースの操作だけで、カメラの旋回とズームは残す（自動旋回と演出は U5。

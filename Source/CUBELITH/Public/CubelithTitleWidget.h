@@ -2,13 +2,18 @@
 // シードは小さく表示するだけで、この画面では変えない（タイトルへ来るたびに引き直す。RULES.md 2 章）。
 // 移植元は Web 版の WebMock/src/ui/titleScreen.ts。
 //
-// 「続きから」とクリア回数の表示（RULES.md 6 章の残り）は後続タスクで足す。
+// 途中の盤面（RULES.md 3.8）があれば「開始」の上に「続きから」を出し、その盤面の難易度と残りピース数を
+// 添える。クリア回数は「合計」と「選んでいる難易度の回数」で 1 行出す（RULES.md 6 章）。文言を作るのは
+// 純粋関数（CubelithTitleState.h）で、この画面はその結果を部品へ流すだけにしてある。
 
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Misc/Optional.h"
 
+#include "CubelithSave.h"
 #include "CubelithScreenWidget.h"
+#include "CubelithTitleState.h"
 
 #include "CubelithTitleWidget.generated.h"
 
@@ -39,6 +44,12 @@ struct FCubelithTitleSelection
 DECLARE_DELEGATE_OneParam(FCubelithTitleStarted, const FCubelithTitleSelection&);
 
 /**
+ * 「続きから」が押されたときに呼ぶ（titleScreen.ts の onResume）。ACubelithGameMode が受ける。
+ * 復元する盤面（難易度とシード）はセーブが持っているので、この画面は押されたことだけを返す
+ */
+DECLARE_DELEGATE(FCubelithTitleResumed);
+
+/**
  * タイトル / 難易度選択画面。
  *
  * 人が UMG のウィジェットブループリントを作るときは、このクラス（か派生クラス）を親にして
@@ -58,8 +69,23 @@ public:
 	 */
 	void SetInitialSelection(int32 N, int32 M, bool bInAllowRotation, uint32 InSeed);
 
+	/**
+	 * 途中の盤面（RULES.md 3.8）を渡す（AddToViewport の前に呼ぶ）。
+	 * 未設定なら「続きから」とその 1 行を出さない（RULES.md 6 章の「無ければ出さない」）
+	 */
+	void SetResume(const TOptional<Cubelith::FTitleResume>& InResume);
+
+	/**
+	 * クリア回数（RULES.md 3.8）を渡す（AddToViewport の前に呼ぶ）。
+	 * 「合計」はそのまま、「この難易度」は**今選んでいる難易度**の回数なので、選択を変えるたびに引き直す
+	 */
+	void SetClearCounts(const FCubelithSavedClears& InClears);
+
 	/** 「開始」が押されたとき */
 	FCubelithTitleStarted OnStart;
+
+	/** 「続きから」が押されたとき（途中の盤面が無いときは出さないので呼ばれない） */
+	FCubelithTitleResumed OnResume;
 
 protected:
 	virtual void BuildFallbackLayout() override;
@@ -89,9 +115,21 @@ protected:
 	UPROPERTY(meta = (BindWidgetOptional))
 	TObjectPtr<UTextBlock> SummaryText;
 
+	/** 「続きから」（RULES.md 6 章。途中の盤面が無ければ隠す） */
+	UPROPERTY(meta = (BindWidgetOptional))
+	TObjectPtr<UButton> ResumeButton;
+
+	/** 「続きから」に添える 1 行（`N = 3 / M = 4 / 回転なし・残り 2 ピース`。無ければ隠す） */
+	UPROPERTY(meta = (BindWidgetOptional))
+	TObjectPtr<UTextBlock> ResumeNoteText;
+
 	/** 「開始」 */
 	UPROPERTY(meta = (BindWidgetOptional))
 	TObjectPtr<UButton> StartButton;
+
+	/** クリア回数の 1 行（`クリア 合計 3 回 / この難易度 1 回`。RULES.md 6 章） */
+	UPROPERTY(meta = (BindWidgetOptional))
+	TObjectPtr<UTextBlock> ClearCountText;
 
 	/** シードの表示（小さく。RULES.md 6 章） */
 	UPROPERTY(meta = (BindWidgetOptional))
@@ -110,6 +148,9 @@ private:
 	/** 選択状態と文字の表示を今の選択に合わせる（titleScreen.ts の syncSelection） */
 	void SyncSelection();
 
+	/** 「続きから」を出す / 隠すと、添える 1 行を今の Resume に合わせる */
+	void SyncResume();
+
 	/** 「開始」を押したときの処理 */
 	void HandleStartClicked();
 
@@ -124,6 +165,12 @@ private:
 
 	/** 表示しているシード（「開始」でそのまま渡す） */
 	uint32 Seed = 0;
+
+	/** 途中の盤面（RULES.md 3.8）。未設定なら「続きから」を出さない */
+	TOptional<Cubelith::FTitleResume> Resume;
+
+	/** クリア回数（RULES.md 3.8）。UPROPERTY にしないのは UObject を指さない素の値だけだから */
+	FCubelithSavedClears Clears;
 
 	/**
 	 * 選択肢のボタンを並べ終えたか。SetInitialSelection が「その場で反映する」か

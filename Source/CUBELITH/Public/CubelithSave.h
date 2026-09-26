@@ -202,6 +202,9 @@ namespace Cubelith
 	CUBELITH_API FString DifficultyKey(const FCubelithSavedDifficulty& Difficulty);
 
 	/** その難易度のクリア回数（記録が無ければ 0。TS の clearCountOf） */
+	CUBELITH_API int32 ClearCountOf(const FCubelithSavedClears& Clears, const FCubelithSavedDifficulty& Difficulty);
+
+	/** 同じもののセーブ全体からの引き方（呼ぶ側が Clears を取り出さなくて済むようにした別名） */
 	CUBELITH_API int32 ClearCountOf(const FCubelithSaveData& Data, const FCubelithSavedDifficulty& Difficulty);
 
 	/**
@@ -252,4 +255,28 @@ namespace Cubelith
 
 	/** ロジックの FPlacement を保存用の形へ */
 	CUBELITH_API FCubelithSavedPlacement ToSavedPlacement(const FPlacement& Placement);
+
+	/** 保存された配置をロジックの初期配置（Cubelith::FGame へ渡す形）へ直す。並びは保存された順のまま */
+	CUBELITH_API TArray<FPlacement> ToCorePlacements(TArrayView<const FCubelithSavedPlacement> Placements);
+
+	/**
+	 * 固定中のピースを保存する形にする（id 昇順。TS の main.ts の currentLocks）。
+	 * FGame::LockedIds は昇順なので並べ直しは要らない（SanitizeSaveData が期待する並びと同じ）
+	 */
+	CUBELITH_API TArray<FCubelithSavedLock> CollectSavedLocks(const FGame& Game);
+
+	/**
+	 * 今の盤面から「途中の盤面」を組み立てる（TS の main.ts の saveProgress が作る SavedProgress）。
+	 * Seed は uint32 のまま受けて int64 へ入れる（FCubelithSavedProgress::Seed の「解釈:」）
+	 */
+	CUBELITH_API FCubelithSavedProgress MakeSavedProgress(
+		const FCubelithSavedDifficulty& Difficulty, uint32 Seed,
+		TArrayView<const FPlacement> Placements, TArrayView<const FCubelithSavedLock> Locks, int32 Remaining);
+
+	/**
+	 * 途中の盤面を覚える（TS の withProgress）。**最後に選んだ難易度もその盤面の難易度に揃える**
+	 * （難易度が決まるのはタイトルで「開始」または「続きから」を押したとき。RULES.md 3.8）。
+	 * 覚えていた盤面は確認なしで上書きされる
+	 */
+	CUBELITH_API void SetProgress(FCubelithSaveData& Data, const FCubelithSavedProgress& Progress);
 }

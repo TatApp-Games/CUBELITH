@@ -15,7 +15,10 @@
 namespace CubelithRenderTests
 {
 	// FreeRotationTest.cpp 専用のヘルパ。unity ビルドでは他のテストファイルと同じ翻訳単位に入るので、
-	// 名前をこの中に閉じる（素の無名 namespace だと CubelithPlayerController.cpp の同名の関数と衝突する）
+	// 名前をこの中に閉じる（素の無名 namespace だと CubelithPlayerController.cpp の同名の関数と衝突する）。
+	// **LogicAxisName は呼ぶときも名前空間で修飾する**: 名前空間に入れても、あちらの無名名前空間の
+	// 同名のヘルパは大域スコープに見えているので、テストが `using namespace` を書いた先での
+	// 修飾なしの呼び出しは「どちらか決められない」（C2668）になる
 	namespace FreeRotationTestDetail
 	{
 		/** 向きの比較は id なので厳密。行列の要素の比較だけ許容差を付ける */
@@ -184,7 +187,8 @@ bool FCubelithFreeRotationAxisQuaternionTest::RunTest(const FString& Parameters)
 			if (!Actual.Equals(Expected, KINDA_SMALL_NUMBER) && !Actual.Equals(Expected * -1.0, KINDA_SMALL_NUMBER))
 			{
 				AddError(FString::Printf(TEXT("軸 %s の %+d 方向 90 度が %s（期待 %s）"),
-					LogicAxisName(Axis), Dir, *Actual.ToString(), *Expected.ToString()));
+					CubelithRenderTests::FreeRotationTestDetail::LogicAxisName(Axis), Dir,
+					*Actual.ToString(), *Expected.ToString()));
 			}
 		}
 	}
@@ -212,7 +216,8 @@ bool FCubelithFreeRotationAxisStepTest::RunTest(const FString& Parameters)
 				if (Actual != Expected)
 				{
 					AddError(FString::Printf(TEXT("向き %d に軸 %s の %+d 方向 90 度で %d（期待 %d）"),
-						Orientation, LogicAxisName(Axis), Dir, Actual, Expected));
+						Orientation, CubelithRenderTests::FreeRotationTestDetail::LogicAxisName(Axis),
+						Dir, Actual, Expected));
 					return false;
 				}
 			}

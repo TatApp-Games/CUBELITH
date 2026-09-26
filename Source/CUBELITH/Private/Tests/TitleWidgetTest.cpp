@@ -1,7 +1,7 @@
 // タイトル / 難易度選択画面（UCubelithTitleWidget。RULES.md 6 章・Docs/SPEC_UE.md 4 章の「画面（UI）」）のテスト。
 // 移植元 WebMock/src/ui/titleScreen.ts に対応するテストは WebMock にも無いので、確かめるのは
 // 仮のレイアウトが組まれること・N を変えると M のプリセットが作り直されて選択が引き継がれること・
-// 「開始」がタイトルで選ばれている値を渡すこと。
+// 「開始」がタイトルで選ばれている値を渡すこと・「続きから」とクリア回数（RULES.md 3.8 / 6 章）の出し方。
 //
 // Slate の実体（SButton など）は作らず、UMG の部品の木（UWidgetTree）と振る舞いだけを見る。
 // UUserWidget::Initialize は UWorld を要らないので -nullrhi のコマンドラインでも走り、
@@ -137,6 +137,34 @@ namespace CubelithRenderTests
 		{
 			return CollectTexts(Widget).Contains(Expected);
 		}
+
+		/**
+		 * ボタンが見えているか。仮の画面のボタンは USizeBox で包んであり、隠すときは入れ物ごと
+		 * Collapsed になる（UCubelithScreenWidget::SetButtonVisible）ので、親までさかのぼって見る
+		 */
+		bool IsButtonVisible(const UCubelithTitleWidget& Widget, const FString& Label)
+		{
+			const UWidget* Current = FindButton(Widget, Label);
+			while (Current != nullptr)
+			{
+				if (Current->GetVisibility() == ESlateVisibility::Collapsed
+					|| Current->GetVisibility() == ESlateVisibility::Hidden)
+				{
+					return false;
+				}
+				Current = Current->GetParent();
+			}
+			return true;
+		}
+
+		/** クリア回数を 1 つ作る（難易度ごとのキーは Cubelith::DifficultyKey の形） */
+		FCubelithSavedClears MakeClears(int32 Total, const FString& Key, int32 Count)
+		{
+			FCubelithSavedClears Clears;
+			Clears.Total = Total;
+			Clears.ByDifficulty.Add(Key, Count);
+			return Clears;
+		}
 	}
 }
 
@@ -153,8 +181,9 @@ bool FCubelithTitleWidgetFallbackLayoutTest::RunTest(const FString& Parameters)
 	TestNotNull(TEXT("WidgetTree"), Widget->WidgetTree.Get());
 	TestNotNull(TEXT("仮のレイアウトの根"), Widget->WidgetTree->RootWidget.Get());
 
-	// N が 5 個（3..7）・M が N=4 のプリセット 5 個・パズルの回転 2 個・「開始」1 個
-	TestEqual(TEXT("ボタンの数"), CollectButtons(*Widget).Num(), 13);
+	// N が 5 個（3..7）・M が N=4 のプリセット 5 個・パズルの回転 2 個・「続きから」1 個・「開始」1 個。
+	// 「続きから」は途中の盤面が無くても作り、隠すだけ（人の UMG と同じ経路にするため）
+	TestEqual(TEXT("ボタンの数"), CollectButtons(*Widget).Num(), 14);
 
 	// N は 3..7 の 5 個、M は N=4 のプリセット 4 / 6 / 8 / 10 / 12。4 と 6 は両方に出るので 2 個になる
 	TestEqual(TEXT("ラベル 3 のボタン（N=3）"), CountButtons(*Widget, TEXT("3")), 1);
@@ -174,6 +203,13 @@ bool FCubelithTitleWidgetFallbackLayoutTest::RunTest(const FString& Parameters)
 	// まとめの行とシードの表示（RULES.md 6 章の「シードの表示（小さく）」）
 	TestTrue(TEXT("まとめの行"), HasText(*Widget, TEXT("N = 4 / M = 8 / 回転あり（64 ボクセルを 8 個に分割）")));
 	TestTrue(TEXT("シードの行"), HasText(*Widget, TEXT("seed 42")));
+
+	// 途中の盤面を渡していないので「続きから」は隠れている（RULES.md 6 章の「無ければ出さない」）
+	TestNotNull(TEXT("「続きから」のボタン"), FindButton(*Widget, TEXT("続きから")));
+	TestFalse(TEXT("「続きから」は出ていない"), IsButtonVisible(*Widget, TEXT("続きから")));
+
+	// クリア回数の行は途中の盤面が無くても出る（RULES.md 6 章。何も遊んでいなければ 0 回）
+	TestTrue(TEXT("クリア回数の行"), HasText(*Widget, TEXT("クリア 合計 0 回 / この難易度 0 回")));
 
 	ReleaseTitleWidget(Widget);
 	return true;
@@ -218,7 +254,7 @@ bool FCubelithTitleWidgetSpaceSizeChangeTest::RunTest(const FString& Parameters)
 		HasText(*Widget, TEXT("N = 5 / M = 8 / 回転なし（125 ボクセルを 8 個に分割）")));
 	TestEqual(TEXT("M=11 のボタンができた"), CountButtons(*Widget, TEXT("11")), 1);
 	TestEqual(TEXT("M=12 のボタンは消えた"), CountButtons(*Widget, TEXT("12")), 0);
-	TestEqual(TEXT("ボタンの数は変わらない"), CollectButtons(*Widget).Num(), 13);
+	TestEqual(TEXT("ボタンの数は変わらない"), CollectButtons(*Widget).Num(), 14);
 
 	// M=17 を選んでから N=3（プリセットは 3 / 4 / 5 / 6 / 7）へ落とすと、最も近い 7 へ寄る
 	TestTrue(TEXT("M=17 を押せた"), ClickButton(*Widget, TEXT("17")));
@@ -259,6 +295,69 @@ bool FCubelithTitleWidgetStartTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("渡された M"), Received.PieceCount, 10);
 	TestTrue(TEXT("渡されたパズルの回転"), Received.bAllowRotation);
 	TestEqual(TEXT("渡されたシード"), static_cast<int64>(Received.Seed), static_cast<int64>(12345));
+
+	ReleaseTitleWidget(Widget);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCubelithTitleWidgetResumeTest, "CUBELITH.Render.TitleWidget.Resume",
+	EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::ProductFilter)
+
+bool FCubelithTitleWidgetResumeTest::RunTest(const FString& Parameters)
+{
+	using namespace CubelithRenderTests::TitleWidgetTestDetail;
+
+	// タイトルで選んでいるのは N=4 / M=8 / 回転あり。途中の盤面は別の難易度（N=3 / M=5 / 回転なし）
+	UCubelithTitleWidget* const Widget = MakeTitleWidget(4, 8, /*bAllowRotation=*/true, 7);
+
+	Cubelith::FTitleResume Resume;
+	Resume.SpaceSize = 3;
+	Resume.PieceCount = 5;
+	Resume.bAllowRotation = false;
+	Resume.Remaining = 2;
+	Widget->SetResume(TOptional<Cubelith::FTitleResume>(Resume));
+
+	TestTrue(TEXT("「続きから」が出る"), IsButtonVisible(*Widget, TEXT("続きから")));
+	// 出すのは**その盤面の**難易度で、タイトルで選んでいる N=4 / M=8 ではない（RULES.md 6 章）
+	TestTrue(TEXT("途中の盤面の 1 行"),
+		HasText(*Widget, TEXT("N = 3 / M = 5 / 回転なし・残り 2 ピース")));
+
+	int32 ResumeCount = 0;
+	Widget->OnResume.BindLambda([&ResumeCount]() { ++ResumeCount; });
+	TestTrue(TEXT("「続きから」を押せた"), ClickButton(*Widget, TEXT("続きから")));
+	TestEqual(TEXT("「続きから」で 1 回だけ呼ばれる"), ResumeCount, 1);
+
+	// 途中の盤面を外すと隠れる（RULES.md 6 章の「無ければ出さない」）
+	Widget->SetResume(TOptional<Cubelith::FTitleResume>());
+	TestFalse(TEXT("外すと隠れる"), IsButtonVisible(*Widget, TEXT("続きから")));
+
+	ReleaseTitleWidget(Widget);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCubelithTitleWidgetClearCountTest, "CUBELITH.Render.TitleWidget.ClearCount",
+	EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::ProductFilter)
+
+bool FCubelithTitleWidgetClearCountTest::RunTest(const FString& Parameters)
+{
+	using namespace CubelithRenderTests::TitleWidgetTestDetail;
+
+	// 合計 5 回のうち N=4 / M=8 / 回転なし が 2 回（RULES.md 6 章の「合計」と「選んでいる難易度の回数」）
+	UCubelithTitleWidget* const Widget = MakeTitleWidget(4, 8, /*bAllowRotation=*/false, 7);
+	Widget->SetClearCounts(MakeClears(5, TEXT("4-8-0"), 2));
+
+	TestTrue(TEXT("選んでいる難易度の回数が出る"),
+		HasText(*Widget, TEXT("クリア 合計 5 回 / この難易度 2 回")));
+
+	// 選択を変えると「この難易度」だけが変わる（記録の無い難易度は 0 回）
+	TestTrue(TEXT("M=10 を押せた"), ClickButton(*Widget, TEXT("10")));
+	TestTrue(TEXT("選択を変えると引き直す"),
+		HasText(*Widget, TEXT("クリア 合計 5 回 / この難易度 0 回")));
+
+	// 元の難易度へ戻すと元の回数に戻る
+	TestTrue(TEXT("M=8 を押せた"), ClickButton(*Widget, TEXT("8")));
+	TestTrue(TEXT("戻すと元の回数"),
+		HasText(*Widget, TEXT("クリア 合計 5 回 / この難易度 2 回")));
 
 	ReleaseTitleWidget(Widget);
 	return true;

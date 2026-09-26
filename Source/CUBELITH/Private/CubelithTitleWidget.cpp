@@ -11,16 +11,11 @@
 
 #include "CubelithDifficulty.h"
 #include "CubelithLog.h"
+#include "CubelithTitleState.h"
 #include "Generate.h"
 
 namespace
 {
-	/** パズルの回転の表示（titleScreen.ts の rotationLabel） */
-	const TCHAR* RotationLabel(bool bAllowRotation)
-	{
-		return bAllowRotation ? TEXT("回転あり") : TEXT("回転なし");
-	}
-
 	/** 数値 1 つのボタンのラベル。桁区切りが入らないよう FText::AsNumber は使わない */
 	FText NumberLabel(int32 Value)
 	{
@@ -32,7 +27,7 @@ namespace
 	constexpr int32 BodyFontSize = 16;
 	constexpr int32 SeedFontSize = 12;
 
-	/** 「開始」の横幅（指で押せる高さは ConstructButton が確保する） */
+	/** 「開始」と「続きから」の横幅（指で押せる高さは ConstructButton が確保する） */
 	constexpr float StartButtonWidthPx = 240.0f;
 }
 
@@ -47,6 +42,28 @@ void UCubelithTitleWidget::SetInitialSelection(int32 N, int32 M, bool bInAllowRo
 	if (bOptionsBuilt)
 	{
 		RebuildPieceCountOptions();
+		SyncSelection();
+	}
+}
+
+void UCubelithTitleWidget::SetResume(const TOptional<Cubelith::FTitleResume>& InResume)
+{
+	Resume = InResume;
+
+	// SetInitialSelection と同じで、画面がまだ組まれていなければ BindBehavior が組み終わりに反映する
+	if (bOptionsBuilt)
+	{
+		SyncResume();
+	}
+}
+
+void UCubelithTitleWidget::SetClearCounts(const FCubelithSavedClears& InClears)
+{
+	Clears = InClears;
+
+	// 「この難易度」の回数は選択で変わるので、文言を作るのは SyncSelection 側
+	if (bOptionsBuilt)
+	{
 		SyncSelection();
 	}
 }
@@ -74,8 +91,17 @@ void UCubelithTitleWidget::BuildFallbackLayout()
 
 	SummaryText = ConstructText(Stack, FText::GetEmpty(), BodyFontSize);
 
+	// 解釈: 「続きから」は「開始」の上に置き、下に難易度と残りピース数を 1 行添える（RULES.md 6 章の
+	// 「『開始』の上に『続きから』を出し、その盤面の難易度と残りピース数を添える」。titleScreen.ts と同じ並び）。
+	// 途中の盤面が無いときは SyncResume が行ごと隠す（ボタンを作らないのではなく隠すのは、人の UMG に
+	// 置かれている場合と同じ経路にするため。HUD の「解釈:」と同じ考え方）
+	ResumeButton = ConstructButton(Stack, FText::FromString(TEXT("続きから")), TFunction<void()>(), StartButtonWidthPx);
+	ResumeNoteText = ConstructText(Stack, FText::GetEmpty(), BodyFontSize);
+
 	// 押したときの処理は BindBehavior でまとめて結ぶ（人の UMG のボタンと同じ道を通す）ので、ここでは付けない
 	StartButton = ConstructButton(Stack, FText::FromString(TEXT("開始")), TFunction<void()>(), StartButtonWidthPx);
+
+	ClearCountText = ConstructText(Stack, FText::GetEmpty(), BodyFontSize);
 
 	SeedText = ConstructText(Stack, FText::GetEmpty(), SeedFontSize);
 }
@@ -83,6 +109,8 @@ void UCubelithTitleWidget::BuildFallbackLayout()
 void UCubelithTitleWidget::BindBehavior()
 {
 	BindButton(StartButton, [this]() { HandleStartClicked(); });
+	// 復元する盤面はセーブが持っているので、この画面は押されたことだけを返す（RULES.md 3.8）
+	BindButton(ResumeButton, [this]() { OnResume.ExecuteIfBound(); });
 
 	BuildSpaceSizeOptions();
 	BuildRotationOptions();
@@ -90,6 +118,7 @@ void UCubelithTitleWidget::BindBehavior()
 
 	bOptionsBuilt = true;
 	SyncSelection();
+	SyncResume();
 
 	if (StartButton == nullptr)
 	{
@@ -185,13 +214,34 @@ void UCubelithTitleWidget::SyncSelection()
 	SetButtonSelected(RotationOffButton, !bAllowRotation);
 	SetButtonSelected(RotationOnButton, bAllowRotation);
 
-	SetTextSafe(SummaryText, FText::FromString(FString::Printf(
-		TEXT("N = %d / M = %d / %s（%d ボクセルを %d 個に分割）"),
-		SpaceSize, PieceCount, RotationLabel(bAllowRotation),
-		SpaceSize * SpaceSize * SpaceSize, PieceCount)));
+	SetTextSafe(SummaryText,
+		FText::FromString(Cubelith::TitleSummaryText(SpaceSize, PieceCount, bAllowRotation)));
+
+	// クリア回数（RULES.md 6 章）。「この難易度」は今選んでいる難易度の回数なので、選択を変えるたびに引き直す
+	FCubelithSavedDifficulty Selected;
+	Selected.SpaceSize = SpaceSize;
+	Selected.PieceCount = PieceCount;
+	Selected.bAllowRotation = bAllowRotation;
+	SetTextSafe(ClearCountText, FText::FromString(
+		Cubelith::TitleClearCountText(Clears.Total, Cubelith::ClearCountOf(Clears, Selected))));
 
 	// シードは出すだけ（この画面では変えない。RULES.md 6 章）
 	SetTextSafe(SeedText, FText::FromString(FString::Printf(TEXT("seed %u"), Seed)));
+}
+
+void UCubelithTitleWidget::SyncResume()
+{
+	// 途中の盤面が無ければ「続きから」とその 1 行は出さない（RULES.md 6 章）
+	const bool bHasResume = Resume.IsSet();
+	SetButtonVisible(ResumeButton, bHasResume);
+	SetWidgetVisible(ResumeNoteText, bHasResume);
+	if (!bHasResume)
+	{
+		return;
+	}
+
+	// 出すのは**その盤面の**難易度と残りピース数（タイトルで選んでいる難易度ではない。RULES.md 6 章）
+	SetTextSafe(ResumeNoteText, FText::FromString(Cubelith::TitleResumeText(Resume.GetValue())));
 }
 
 void UCubelithTitleWidget::HandleStartClicked()
