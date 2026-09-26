@@ -94,8 +94,11 @@ void ACubelithPuzzleActor::Build(TArrayView<const Cubelith::FPiece> Pieces, int3
 	LastPlacements.Reset();
 	// 作り直したら表示だけの自由回転も消える（掛けていた操作は外で畳まれている）
 	FreeRotations.Reset();
+	// スナップの補間も同じ（走っていた補間は外で打ち切られている。Cubelith::FSnapMotion::CancelAll）
+	ViewOffsets.Reset();
 	// 作り直したら選択は無くなる（選び直すのは操作する側。RULES.md 3.3 の外からの解除に当たる）
 	SelectedPieceId = INDEX_NONE;
+	SnapHintPieceId = INDEX_NONE;
 	BoundingRadiusCm = 0.0;
 
 	SpaceSize = N;
@@ -228,6 +231,14 @@ double ACubelithPuzzleActor::ApplyPlacement(
 	// 表示だけの自由回転（掛かっていなければ nullptr）。90 度に縛らない見せ方で、ロジックの配置は変わらない
 	const FQuat* FreeRotation = FreeRotations.Find(Placement.PieceId);
 
+	// 表示だけのずれ（スナップの補間移動。掛かっていなければ 0）。グリッド単位で来るので UE の座標へ直す。
+	// Cubelith::VoxelToWorld は整数座標（FVec3）用なので、同じ置換（(x, y, z) → (X, Z, Y)）を
+	// 小数のままここで掛ける（Docs/SPEC_UE.md 7.2）
+	const FVector* GridOffset = ViewOffsets.Find(Placement.PieceId);
+	const FVector ViewOffsetCm = (GridOffset != nullptr)
+		? FVector(GridOffset->X, GridOffset->Z, GridOffset->Y) * Cubelith::VoxelSizeCm
+		: FVector::ZeroVector;
+
 	// 向きは PlacedVoxels がワールドのボクセル座標に織り込むので、通常時のインスタンスは平行移動だけでよい
 	// （pieces.ts の通常時と同じ）
 	const TArray<Cubelith::FVec3> Voxels = Cubelith::PlacedVoxels(*Piece, Placement);
@@ -235,16 +246,19 @@ double ACubelithPuzzleActor::ApplyPlacement(
 	// 自由回転の中心はピースの局所原点（RULES.md 3.3。Placement.Position がそのグリッド座標）。
 	// FGame::Rotate / FGame::Place は Position を据え置いて向き id だけを差し替える = 局所原点まわりの回転なので、
 	// 見せ方も同じ中心で回さないと確定した瞬間にピースが飛ぶ
-	const FVector FreeRotationCenter = Cubelith::VoxelToWorld(Placement.Position) + CenterOffset;
+	// 表示だけのずれが掛かっていれば中心も同じだけずれる（両方同時に掛かることは無いが、辻褄は合わせておく）
+	const FVector FreeRotationCenter = Cubelith::VoxelToWorld(Placement.Position) + CenterOffset + ViewOffsetCm;
 
 	double MaxDistanceSquared = 0.0;
 
 	for (int32 Index = 0; Index < Voxels.Num(); ++Index)
 	{
 		// アクタはワールド原点に置くので、このローカル座標がそのままワールド座標になる
-		FVector Location = Cubelith::VoxelToWorld(Voxels[Index]) + CenterOffset;
-		// 外接球は「ロジックの配置での大きさ」を測るものなので、一時的な自由回転は数えない
-		MaxDistanceSquared = FMath::Max(MaxDistanceSquared, Location.SizeSquared());
+		const FVector LogicLocation = Cubelith::VoxelToWorld(Voxels[Index]) + CenterOffset;
+		// 外接球は「ロジックの配置での大きさ」を測るものなので、一時的な自由回転とずれは数えない
+		MaxDistanceSquared = FMath::Max(MaxDistanceSquared, LogicLocation.SizeSquared());
+
+		FVector Location = LogicLocation + ViewOffsetCm;
 
 		FQuat InstanceRotation = FQuat::Identity;
 		if (FreeRotation != nullptr)
@@ -297,6 +311,53 @@ void ACubelithPuzzleActor::ClearFreeRotation(int32 PieceId)
 {
 	// 掛かっていなければ書き直す必要も無い（通常時の負荷を増やさない。pieces.ts の setFreeRotation(null) と同じ）
 	if (FreeRotations.Remove(PieceId) == 0)
+	{
+		return;
+	}
+
+	RedrawPiece(PieceId);
+}
+
+void ACubelithPuzzleActor::SetSnapHint(int32 PieceId)
+{
+	if (SnapHintPieceId == PieceId)
+	{
+		return;
+	}
+
+	const int32 PreviousPieceId = SnapHintPieceId;
+	SnapHintPieceId = PieceId;
+
+	// 先に前の候補を元の色へ戻してから新しい候補を光らせる（SetSelectedPiece と同じ順）
+	if (PreviousPieceId != INDEX_NONE)
+	{
+		ApplyPieceColor(PreviousPieceId);
+	}
+	if (SnapHintPieceId != INDEX_NONE)
+	{
+		ApplyPieceColor(SnapHintPieceId);
+	}
+}
+
+void ACubelithPuzzleActor::SetViewOffset(int32 PieceId, const FVector& GridOffset)
+{
+	// 補間中は毎フレーム来るので、同じ値なら書き直さない（インスタンスの行列を作り直す処理を省く）
+	if (const FVector* Existing = ViewOffsets.Find(PieceId))
+	{
+		if (Existing->Equals(GridOffset))
+		{
+			return;
+		}
+	}
+
+	ViewOffsets.Add(PieceId, GridOffset);
+	RedrawPiece(PieceId);
+}
+
+void ACubelithPuzzleActor::ClearViewOffset(int32 PieceId)
+{
+	// 掛かっていなければ書き直す必要も無い（pieces.ts の setOffset(pieceId, null) と同じ）
+	if (ViewOffsets.Remove(PieceId) == 0)
 	{
 		return;
 	}
@@ -402,15 +463,15 @@ void ACubelithPuzzleActor::SetSelectedPiece(int32 PieceId)
 	// 先に前の選択を元の色へ戻してから新しい選択を強調する（同じピースを跨ぐことは無いが順は明確にしておく）
 	if (PreviousPieceId != INDEX_NONE)
 	{
-		ApplyPieceColor(PreviousPieceId, /*bSelected=*/false);
+		ApplyPieceColor(PreviousPieceId);
 	}
 	if (SelectedPieceId != INDEX_NONE)
 	{
-		ApplyPieceColor(SelectedPieceId, /*bSelected=*/true);
+		ApplyPieceColor(SelectedPieceId);
 	}
 }
 
-void ACubelithPuzzleActor::ApplyPieceColor(int32 PieceId, bool bSelected)
+void ACubelithPuzzleActor::ApplyPieceColor(int32 PieceId)
 {
 	const FLinearColor* BaseColor = PieceBaseColors.Find(PieceId);
 	TObjectPtr<UMaterialInstanceDynamic>* Found = PieceMaterials.Find(PieceId);
@@ -422,12 +483,20 @@ void ACubelithPuzzleActor::ApplyPieceColor(int32 PieceId, bool bSelected)
 	}
 
 	FLinearColor Color = *BaseColor;
-	if (bSelected)
+	if (PieceId == SelectedPieceId)
 	{
 		// 仮の強調（U5 で縁取り・発光に置き換える）: 白へ寄せてから明るくする。
 		// 乗算はアルファにも掛かるので、元のアルファに戻してから流す
 		Color = FMath::Lerp(Color, FLinearColor::White, FMath::Clamp(SelectionWhitenAmount, 0.0f, 1.0f));
 		Color *= FMath::Max(0.0f, SelectionBrightnessScale);
+		Color.A = BaseColor->A;
+	}
+	else if (PieceId == SnapHintPieceId)
+	{
+		// スナップ候補の仮の発光（RULES.md 5.1。U5 でマテリアルの Emissive に置き換える）。
+		// **選択が優先**（上の分岐が先に効く）。選択中のピースは白へ寄って既に目立っているので、
+		// そこへ弱い持ち上げを重ねても見分けが付かず、「候補が出た」ことが伝わらない
+		Color *= FMath::Max(0.0f, SnapHintBrightnessScale);
 		Color.A = BaseColor->A;
 	}
 

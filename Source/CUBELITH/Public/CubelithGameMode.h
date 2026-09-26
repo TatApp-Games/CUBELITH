@@ -15,6 +15,15 @@
 #include "CubelithGameMode.generated.h"
 
 class ACubelithPuzzleActor;
+class USoundBase;
+
+/**
+ * 配置が変わったことを操作側へ伝える口（Cubelith::FGame の OnChange から中継する）。
+ * 引数は変わった後の全ピースの配置。Cubelith::FPlacement は USTRUCT ではないので
+ * 動的デリゲート（DECLARE_DYNAMIC_*）にはできない ＝ 素のマルチキャストデリゲートにする。
+ * ACubelithPlayerController がここに乗ってスナップ候補の発光を計算し直す（RULES.md 5.1）
+ */
+DECLARE_MULTICAST_DELEGATE_OneParam(FCubelithPlacementsChanged, TArrayView<const Cubelith::FPlacement>);
 
 /**
  * 既定の難易度（RULES.md 3.1 の N=3・M=4・パズルの回転なし）でパズルを 1 つ作り、
@@ -44,6 +53,30 @@ public:
 
 	/** ピースを描くアクタ。まだ湧いていなければ nullptr */
 	ACubelithPuzzleActor* GetPuzzleActor() const { return PuzzleActor; }
+
+	/**
+	 * 配置が変わるたびに呼ばれる（Cubelith::FGame の OnChange からの中継）。
+	 * 乗る側は AddUObject で登録すれば、消えたときに自動で飛ばされる（明示的な解除は要らない）。
+	 * StartPuzzle でパズルを作り直しても、この口そのものは付け替えないので登録は残る
+	 */
+	FCubelithPlacementsChanged OnPlacementsChanged;
+
+	/**
+	 * スナップした瞬間の効果音を鳴らす（RULES.md 3.5）。SnapSound が空なら何もしない。
+	 * ACubelithPlayerController が吸着を確定させた時点で呼ぶ
+	 */
+	void PlaySnapSound();
+
+	/**
+	 * スナップした瞬間に鳴らす効果音（RULES.md 3.5。本実装は MetaSounds で人が作る。Docs/SPEC_UE.md 4 章）。
+	 *
+	 * 割り当てが無ければ鳴らさない（警告も出さない。音が無いまま遊べる状態を正常として扱う）。
+	 * ここに置いたのは、人がエディタで割り当てられる場所が要るため（`.uasset` は AI が作らない。
+	 * Docs/SPEC_UE.md 0 章）。GameMode は Config/DefaultEngine.ini の GlobalDefaultGameMode で
+	 * 指されているので、人がこのクラスの Blueprint 派生を作ってそこを差し替えれば音を割り当てられる
+	 */
+	UPROPERTY(EditAnywhere, Category = "Cubelith|Audio")
+	TObjectPtr<USoundBase> SnapSound;
 
 	/**
 	 * この盤面がパズルの回転「あり」か（RULES.md 3.1）。下の bAllowRotation に `?rot=` / `-CubelithRotation=`

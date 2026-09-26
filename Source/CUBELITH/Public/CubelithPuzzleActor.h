@@ -3,6 +3,7 @@
 // ピースごとに色相をずらす・解答空間の中心を原点に合わせる、という組み立てをそのまま写してある
 // マテリアルは仮（U2 の段階。すりガラスと発光コアは U5 で人が作る）
 // U3 で選択の強調（SetSelectedPiece）と、回転中の 90 度に縛らない見せ方（SetFreeRotation）を足した
+// U4 でスナップ候補の仮の発光（SetSnapHint）と、表示だけのずれ（SetViewOffset / ClearViewOffset）を足した
 
 #pragma once
 
@@ -94,6 +95,30 @@ public:
 	/** 自由回転を解いて、ロジックの配置どおりの見た目に戻す（掛かっていなければ何もしない） */
 	void ClearFreeRotation(int32 PieceId);
 
+	/**
+	 * スナップ候補があるピースを置き換える（無ければ INDEX_NONE。pieces.ts の setSnapHint）。
+	 * 候補がある間そのピースを薄く光らせる（RULES.md 5.1）。前に光らせていたピースは元の色へ戻る。
+	 *
+	 * 仮の見せ方として、選択の強調（SetSelectedPiece）と同じく動的マテリアルの色を持ち上げる
+	 * （強さは SnapHintBrightnessScale。マテリアルの Emissive での本実装は U5）。
+	 * **選択の強調と重なったときは選択が優先**（発光は「そこへ吸い付く」の予告で、選択より弱い情報。
+	 * 選択中のピースは白へ寄って既に目立っているので、そこへ弱い持ち上げを重ねても見分けが付かない）。
+	 */
+	void SetSnapHint(int32 PieceId);
+
+	/** スナップ候補があるピース id（無ければ INDEX_NONE） */
+	int32 GetSnapHint() const { return SnapHintPieceId; }
+
+	/**
+	 * 表示だけをずらす（スナップの補間移動。pieces.ts の setOffset）。GridOffset はグリッド単位で、
+	 * 1.0 = ボクセル 1 マス。ロジックの配置は動かさないので、補間中もクリア判定は整数座標のまま。
+	 * まだ一度も配置を受けていないピースに掛けても、次の UpdatePlacements で効く。
+	 */
+	void SetViewOffset(int32 PieceId, const FVector& GridOffset);
+
+	/** 表示だけのずれを解いて論理位置どおりに戻す（掛かっていなければ何もしない） */
+	void ClearViewOffset(int32 PieceId);
+
 	/** ボクセル 1 個のメッシュ。既定はエンジンの立方体 /Engine/BasicShapes/Cube（1 辺 100 cm） */
 	UPROPERTY(EditAnywhere, Category = "Cubelith|Render")
 	TObjectPtr<UStaticMesh> VoxelMesh;
@@ -143,6 +168,14 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Cubelith|Render", meta = (ClampMin = "0.0"))
 	float SelectionBrightnessScale = 1.6f;
 
+	/**
+	 * スナップ候補があるピースの明るさの倍率（1 で元のまま。RULES.md 5.1 の「薄く光る」）。
+	 * 選択の強調（SelectionBrightnessScale）より弱くしておくと、選択と候補が見分けられる。
+	 * 仮の強調なので、人がエディタで見え方を調整できるようにしてある（Docs/SPEC_UE.md 0 章）
+	 */
+	UPROPERTY(EditAnywhere, Category = "Cubelith|Render", meta = (ClampMin = "0.0"))
+	float SnapHintBrightnessScale = 1.25f;
+
 private:
 	/**
 	 * 1 ピース分のインスタンスを書き直す（pieces.ts の applyPlacement）。表示だけの自由回転はここで足す。
@@ -151,7 +184,10 @@ private:
 	 */
 	double ApplyPlacement(const Cubelith::FPlacement& Placement, const FVector& CenterOffset, const FVector& InstanceScale);
 
-	/** 直近の配置でそのピースだけ書き直す（自由回転を掛け外ししたとき）。まだ置いていなければ何もしない */
+	/**
+	 * 直近の配置でそのピースだけ書き直す（自由回転・表示だけのずれを掛け外ししたとき）。
+	 * まだ置いていなければ何もしない
+	 */
 	void RedrawPiece(int32 PieceId);
 
 	/** インスタンス 1 個のスケール（メッシュの 1 辺をボクセル 1 マスにしてから VoxelFillRatio だけ縮める） */
@@ -166,8 +202,11 @@ private:
 	/** ピース id からピースを引く。未知の id なら nullptr */
 	const Cubelith::FPiece* FindPiece(int32 PieceId) const;
 
-	/** ピース id の動的マテリアルへ色を流す。bSelected なら強調した色にする */
-	void ApplyPieceColor(int32 PieceId, bool bSelected);
+	/**
+	 * ピース id の動的マテリアルへ色を流す。今の選択（SelectedPieceId）とスナップ候補（SnapHintPieceId）を
+	 * 見て、強調の要る / 要らないをここで決める（呼び出し側は「このピースを塗り直して」だけを言う）
+	 */
+	void ApplyPieceColor(int32 PieceId);
 
 	/** ルート。このアクタの位置が解答空間の中心になる（= 軌道カメラの注視点） */
 	UPROPERTY(VisibleAnywhere, Category = "Cubelith|Render")
@@ -198,6 +237,15 @@ private:
 
 	/** ピース id → 表示だけの自由回転（掛かっているピースだけ入る。pieces.ts の freeRotations） */
 	TMap<int32, FQuat> FreeRotations;
+
+	/**
+	 * ピース id → 表示だけのずれ（グリッド単位。掛かっているピースだけ入る。pieces.ts の offsets）。
+	 * スナップの補間移動（Cubelith::FSnapMotion）が毎フレーム書き換える
+	 */
+	TMap<int32, FVector> ViewOffsets;
+
+	/** スナップ候補があるピース id（無ければ INDEX_NONE。pieces.ts の snapHinted） */
+	int32 SnapHintPieceId = INDEX_NONE;
 
 	/** 選択中のピース id（未選択は INDEX_NONE）。Build で作り直したら未選択に戻る */
 	int32 SelectedPieceId = INDEX_NONE;

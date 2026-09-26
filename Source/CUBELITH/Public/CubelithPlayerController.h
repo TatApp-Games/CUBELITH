@@ -14,7 +14,12 @@
 // 乗っ取っている間は ACubelithOrbitPawn::bTouchPinchEnabled を false にして、同じピンチが二重に効かないようにする。
 // 回転「なし」の盤面と未選択のときは乗っ取らないので、2 本指はそのまま Pawn のピンチズームになる（RULES.md 3.1）。
 //
-// スナップは U4、HUD の回転モードのトグルと回転ギズモも U4（マウスの右ボタンはそこまでの仮の手段）。
+// 指 / ボタンを離した時点でマグネット・スナップを掛ける（RULES.md 3.5。移植元は
+// WebMock/src/input/snapControl.ts を移した Cubelith::FSnapControl と、見た目を追いつかせる
+// Cubelith::FSnapMotion）。候補がある間の薄い発光は ACubelithPuzzleActor::SetSnapHint（RULES.md 5.1）、
+// 吸着した瞬間の効果音は ACubelithGameMode::PlaySnapSound へ回す。
+//
+// HUD の回転モードのトグルと回転ギズモは後続タスク（マウスの右ボタンはそこまでの仮の手段）。
 
 #pragma once
 
@@ -24,6 +29,8 @@
 #include "CubelithAxisMapping.h"
 #include "CubelithPickSamples.h"
 #include "CubelithRotateInput.h"
+#include "CubelithSnapControl.h"
+#include "CubelithSnapMotion.h"
 #include "CubelithTwoFingerGesture.h"
 
 #include "CubelithPlayerController.generated.h"
@@ -133,6 +140,14 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Cubelith|Input", meta = (ClampMin = "0.0"))
 	double RotateDegreesPerPixel = Cubelith::RotateDegreesPerPixel;
 
+	/**
+	 * スナップの見た目が論理位置に追いつくまでの時間（秒。RULES.md 3.5 の 100〜150 ms）。
+	 * 既定は snapMotion.ts の SNAP_DURATION_MS = 130 ms と同じ。0 なら補間せず即座に置く。
+	 * 論理上の配置は常に離した瞬間に確定するので、この値は手触りにしか効かない
+	 */
+	UPROPERTY(EditAnywhere, Category = "Cubelith|Input", meta = (ClampMin = "0.0"))
+	double SnapDurationSeconds = Cubelith::SnapDurationSeconds;
+
 protected:
 	virtual void BeginPlay() override;
 
@@ -149,8 +164,43 @@ private:
 	 */
 	void HandlePointerMoved(const FVector2D& ScreenPosition);
 
-	/** 離したときの処理。スナップ（U4）はここに入る。今はドラッグの役割を畳むだけ */
+	/**
+	 * 離したときの処理。ドラッグの役割を畳んでから、ピースを動かしていたならマグネット・スナップを掛ける
+	 * （RULES.md 3.5。pieceInput.ts の onPointerUp が onRelease を呼ぶのと同じ場所）
+	 */
 	void HandlePointerReleased();
+
+	/**
+	 * 離した時点で吸着させる（snapControl.ts の release + main.ts の onSnap）。
+	 * 吸着先があれば Cubelith::FGame::Move で論理上の配置を確定させ、見た目だけを
+	 * Cubelith::FSnapMotion で追いつかせ、効果音を鳴らす。固定中のピースは吸着させない（RULES.md 3.3）
+	 */
+	void ApplySnapOnRelease(int32 PieceId);
+
+	/**
+	 * スナップ候補（＝薄く光らせる対象）を計算し直す（snapControl.ts の refresh）。
+	 * 配置が変わったとき・選択が変わったとき・回転が確定したときに呼ぶ。毎フレームは回さない。
+	 * 固定中のピースは候補を出さない（TS の main.ts が lockKindOf を見て null を渡すのと同じ）
+	 */
+	void RefreshSnapHint();
+
+	/** 配置が変わったときに ACubelithGameMode から呼ばれる（OnPlacementsChanged に乗せる口） */
+	void HandlePlacementsChanged(TArrayView<const Cubelith::FPlacement> Placements);
+
+	/** 走っているスナップの補間を打ち切る（手で動かした / 回した / 固定したとき。TS の snapMotion.cancel） */
+	void CancelSnapMotion(int32 PieceId);
+
+	/** 補間を 1 フレーム進める（PlayerTick から呼ぶ。TS の session.update の snapMotion.update） */
+	void UpdateSnapMotion();
+
+	/** Cubelith::FSnapMotion が出した表示上のずれを ACubelithPuzzleActor へ流す */
+	void ApplySnapOffsets();
+
+	/**
+	 * スナップの制御をこの盤面のピースで用意する（まだなら）。パズルが開くのは GameMode の BeginPlay で、
+	 * この PlayerController の BeginPlay との順序は決まっていないので、使う直前に作る
+	 */
+	void EnsureSnapControl();
 
 	/**
 	 * 右ボタンを押した瞬間の処理（マウスで回転を確かめる仮の手段）。
@@ -294,4 +344,25 @@ private:
 	 * 作り直す（差分を積み上げて誤差を溜めない）
 	 */
 	FQuat FreeRotationQuat = FQuat::Identity;
+
+	/**
+	 * スナップの制御（snapControl.ts）。構築時にピースと N が要るので、パズルが開いたあと
+	 * EnsureSnapControl で作り直す。どの盤面で作ったかは下の SnapControlPieceCount で見る
+	 */
+	Cubelith::FSnapControl SnapControl;
+
+	/**
+	 * SnapControl を作ったときのピース数。0 なら未作成。パズルを作り直すと数が変わるので、
+	 * 食い違いを見て作り直す（U4 の「次の問題」で盤面が入れ替わる道に備える）
+	 */
+	int32 SnapControlPieceCount = 0;
+
+	/** スナップの補間移動（snapMotion.ts）。時間は UWorld の時刻を渡す */
+	Cubelith::FSnapMotion SnapMotion;
+
+	/**
+	 * Cubelith::FSnapMotion が出したずれの受け皿。毎フレーム使い回して確保を避ける
+	 * （走っている補間が無ければ空のまま）
+	 */
+	TArray<Cubelith::FSnapOffsetUpdate> SnapOffsetBuffer;
 };

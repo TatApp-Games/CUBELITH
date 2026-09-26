@@ -32,11 +32,11 @@
 | ピースの描画（`src/render/pieces.ts`） | 1 ピース = 1 `UInstancedStaticMeshComponent`（原典 4.1）。ボクセルの位置は 7.2 の変換で UE の座標へ直す。U2 で `ACubelithPuzzleActor` として実装（ワールド原点 = 解答空間の中心）。仮のメッシュ / マテリアルはエンジンの `/Engine/BasicShapes/Cube` と `BasicShapeMaterial` で、ピースごとに `UMaterialInstanceDynamic` の色を変えている | AI |
 | すりガラス（原典 4.2） | 半透明マテリアル（Roughness 高め）+ Fake 屈折 | 人 |
 | 内部発光コア（`src/render/glowCores.ts`） | Emissive をサイン波で明滅させるマテリアル。ピースごとの位相はインスタンスごとの値（Per-Instance Custom Data）で渡す | 人（値の受け渡しは AI） |
-| 選択・スナップ候補の発光（RULES.md 3.3 / 5.1） | マテリアルのパラメータ | 人と AI |
+| 選択・スナップ候補の発光（RULES.md 3.3 / 5.1） | マテリアルのパラメータ。U4 までは**仮の色の持ち上げ**で、`ACubelithPuzzleActor` がピースごとの `UMaterialInstanceDynamic` の `ColorParameterName`（既定 `Color`）へ流す値を変える。選択は `SetSelectedPiece`（白へ寄せてから明るくする。`SelectionWhitenAmount` / `SelectionBrightnessScale`）、スナップ候補は `SetSnapHint`（明るくするだけ。`SnapHintBrightnessScale`。既定 1.25）で、**重なったときは選択が優先**（選択中のピースは白へ寄って既に目立っているため）。強さはすべて `UPROPERTY(EditAnywhere)` なので人がエディタで調整できる。Emissive での本実装は U5 | 人と AI |
 | 固定の鍵アイコン（RULES.md 6 章） | 未定 | — |
 | 軌道カメラ（`src/render/camera.ts`） | 注視点まわりの軌道カメラを C++ で。U2 で `ACubelithOrbitPawn`（`USpringArmComponent` + `UCameraComponent`）として実装し、`ACubelithGameMode` が開始時にパズルへ合わせる | AI |
-| 入力（`src/input/`） | ライントレースでピースを選ぶ。純粋関数（`axisMapping` / `twoFingerGesture` など）はテストごと C++ へ移す。U2 のカメラ操作は、`InputMappingContext` / `InputAction` が `.uasset`（0 章）なので Enhanced Input を使わず、Tick で `APlayerController` から入力状態をポーリングして読む。人がアセットを作る段になれば Enhanced Input へ移せる。U3 で `ACubelithPlayerController` として実装（`PlayerTick` でのポーリング入力・押した瞬間のライントレースでのピックと選択・ドラッグでのグリッド移動・2 本指の 90 度回転）。`src/input` の純粋関数は `CubelithPickSamples` / `CubelithAxisMapping` / `CubelithTwoFingerGesture` / `CubelithFreeRotation` / `CubelithRotateInput`（`Source/CUBELITH/Public`）へ移した。回転中の 90 度に縛らない見せ方は `ACubelithPuzzleActor::SetFreeRotation`。**マウスの回転は右ボタンのドラッグ**（離した時点で最寄りの向きへ確定させる）で、これは HUD の回転モードのトグルと回転ギズモ（U4）までの仮の手段 | AI（感度の調整は人） |
-| スナップの効果音（RULES.md 3.5） | MetaSounds | 人 |
+| 入力（`src/input/`） | ライントレースでピースを選ぶ。純粋関数（`axisMapping` / `twoFingerGesture` など）はテストごと C++ へ移す。U2 のカメラ操作は、`InputMappingContext` / `InputAction` が `.uasset`（0 章）なので Enhanced Input を使わず、Tick で `APlayerController` から入力状態をポーリングして読む。人がアセットを作る段になれば Enhanced Input へ移せる。U3 で `ACubelithPlayerController` として実装（`PlayerTick` でのポーリング入力・押した瞬間のライントレースでのピックと選択・ドラッグでのグリッド移動・2 本指の 90 度回転）。`src/input` の純粋関数は `CubelithPickSamples` / `CubelithAxisMapping` / `CubelithTwoFingerGesture` / `CubelithFreeRotation` / `CubelithRotateInput`（`Source/CUBELITH/Public`）へ移した。回転中の 90 度に縛らない見せ方は `ACubelithPuzzleActor::SetFreeRotation`。**マウスの回転は右ボタンのドラッグ**（離した時点で最寄りの向きへ確定させる）で、これは HUD の回転モードのトグルと回転ギズモ（U4）までの仮の手段。U4 で手を離したときのマグネット・スナップ（`HandlePointerReleased` → `Cubelith::FSnapControl` / `Cubelith::FSnapMotion`）を足した（下の「スナップ」節） | AI（感度の調整は人） |
+| スナップの効果音（RULES.md 3.5） | MetaSounds（音そのものは人が作る）。鳴らす口は AI 側にあり、`ACubelithGameMode::SnapSound`（`UPROPERTY(EditAnywhere, Category = "Cubelith|Audio")` の `TObjectPtr<USoundBase>`）に割り当てると `ACubelithGameMode::PlaySnapSound` が `UGameplayStatics::PlaySound2D` で鳴らす。**割り当てが無ければ鳴らない**（警告も出さない）。差し替え方は下の「スナップ」節 | 人と AI |
 | クリア演出（RULES.md 5.2） | 発光は Material Parameter Collection、パーティクルは Niagara（原典 5.2）、カメラの旋回は C++ | 人と AI |
 | UI（RULES.md 6 章） | UMG。C++ の基底クラス（`BindWidget`）と、人が作るレイアウト。縦持ちの画面に合わせる | 人と AI |
 | セーブ（RULES.md 3.8） | `USaveGame` を `UGameplayStatics::SaveGameToSlot` で保存する。保存先・保存する形・壊れたデータの扱いは下の「セーブ」節。盤面が変わるたびと、アプリがバックグラウンドに入るとき（`FCoreDelegates` のアプリのライフサイクルの通知）に書く。モバイルでは裏に回ったアプリが OS に終了させられることがあるため | AI |
@@ -44,6 +44,32 @@
 
 - 目標フレームレート: 実機で 30 fps 以上（N=7 / M=27 でも）。対象端末は未定
 - **早めに実機で確かめること**（U1 と並行して人が進める）: すりガラスの見た目と負荷、半透明の ISM でインスタンス同士の前後関係が崩れないか（インスタンス単位では並び替えられない）、Fake 屈折がモバイルで成り立つか
+
+### スナップ
+
+RULES.md 3.5（手を離したときのマグネット・スナップ）と 5.1（候補の発光）の実装。候補を求める純粋関数
+`Cubelith::SnapCandidate` は `Source/CUBELITHCore/Public/Solve.h`（U1 で移植済み）で、ここはその「いつ呼ぶか」と
+結果の配り先。移植元は Web 版の `WebMock/src/input/snapControl.ts`・`WebMock/src/render/snapMotion.ts` と、
+それらを繋いでいる `WebMock/src/main.ts`。
+
+| 役目 | 実装 |
+|---|---|
+| 候補の有無と吸着先を決める | `Cubelith::FSnapControl`（`Source/CUBELITH/Public/CubelithSnapControl.h`）。`Refresh` は光らせる対象が変わったときだけ `true`、`Release` は吸着先があれば「吸着前 / 吸着後の配置」を返す。**現在位置がそのまま候補になる（＝すでに収まっている）ときは吸着先として扱わない** |
+| 見た目を追いつかせる | `Cubelith::FSnapMotion`（`CubelithSnapMotion.h`）。論理上の配置は離した瞬間に整数座標で確定させ、表示だけを `easeOutCubic` で 0 へ戻す。既定は **130 ms**（`Cubelith::SnapDurationSeconds`。RULES.md 3.5 の 100〜150 ms の中央付近で、TS の `SNAP_DURATION_MS` と同じ）。人が変えるのは `ACubelithPlayerController::SnapDurationSeconds`（秒） |
+| 表示だけのずれ | `ACubelithPuzzleActor::SetViewOffset` / `ClearViewOffset`（グリッド単位。`pieces.ts` の `setOffset`）。ロジックの配置は動かないので、補間中もクリア判定と残りピース数は整数座標のまま |
+| 候補の発光 | `ACubelithPuzzleActor::SetSnapHint`（上の 4 章の表のとおり仮の色の持ち上げ。本実装は U5） |
+| 入力への接続 | `ACubelithPlayerController::HandlePointerReleased`（指 / 左ボタンを離した時点）。配置が変わったとき・選択が変わったとき・回転が確定したときに `Refresh` を呼び（毎フレームは回さない）、手でドラッグし直した / 回したときは走っている補間を打ち切る。配置の変化は `ACubelithGameMode::OnPlacementsChanged`（`Cubelith::FGame` の `OnChange` からの中継）で受ける |
+
+**効果音と発光の差し替え口**
+
+- **効果音**: `ACubelithGameMode` の `UPROPERTY(EditAnywhere, Category = "Cubelith|Audio")` の `TObjectPtr<USoundBase> SnapSound`。`ACubelithPlayerController` が吸着を確定させた時点で `ACubelithGameMode::PlaySnapSound` を呼び、`UGameplayStatics::PlaySound2D` で鳴らす。**割り当てが無ければ鳴らさない**（吸着ごとに来るので警告も出さない）
+  - 人の手順: `ACubelithGameMode` の Blueprint 派生を作って `SnapSound` に MetaSound（または `USoundWave`）を割り当て、`Config/DefaultEngine.ini` の `GlobalDefaultGameMode` をその Blueprint に差し替える。`.uasset` は AI が作らないので（0 章）、置き場所を「人がエディタで割り当てられるところ」にしてある
+  - 解釈: 2D（定位なし）で鳴らす。モバイルの縦持ちでピースは常に画面内にあり、音の来る向きを付ける意味が薄いため
+- **発光**: `ACubelithPuzzleActor` の `SnapHintBrightnessScale`（候補）と `SelectionWhitenAmount` / `SelectionBrightnessScale`（選択）。どれも `UPROPERTY(EditAnywhere, Category = "Cubelith|Render")` で、`VoxelMaterial` を差し替えても `ColorParameterName` のベクトルパラメータがあれば効く。U5 でマテリアルの Emissive に移すときは、この 3 つを新しいパラメータ名へ読み替える
+- 補間の時間は `ACubelithPlayerController` の `SnapDurationSeconds`（`UPROPERTY(EditAnywhere, Category = "Cubelith|Input")`、秒。既定 0.130）
+
+Automation Test は `CUBELITH.Render.Snap.*`（`FSnapControl`）と `CUBELITH.Render.SnapMotion.*`（`FSnapMotion`）。
+どちらも `UWorld` を作らずに純粋な状態機械として確かめる（時刻は呼び出し側から渡す形にしてあるので、実時間を待たない）。
 
 ### セーブ
 
