@@ -95,6 +95,15 @@ public:
 	void SetSelectedPiece(int32 PieceId);
 
 	/**
+	 * 盤面が入れ替わるときに操作の状態を白紙へ戻す（ACubelithGameMode::EndSession が呼ぶ）。
+	 *
+	 * 選択・ドラッグ・2 本指・自由回転・スナップはどれも前の盤面のピースに紐づくので、
+	 * セッションを作り直すたびに捨てる。**ピース数が同じでもシードが違えば形が変わる**ので、
+	 * スナップの制御は EnsureSnapControl の「ピース数が変わったら作り直す」判定に頼らず必ず作り直させる
+	 */
+	void ResetForNewSession();
+
+	/**
 	 * タッチの近接ピックの許容半径（CSS ピクセル相当。pieceInput.ts の TOUCH_PICK_RADIUS_PX）。
 	 * 指の接触面は広く狙いも粗いのでマウスより広く取る
 	 */

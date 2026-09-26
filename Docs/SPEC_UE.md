@@ -38,7 +38,7 @@
 | 入力（`src/input/`） | ライントレースでピースを選ぶ。純粋関数（`axisMapping` / `twoFingerGesture` など）はテストごと C++ へ移す。U2 のカメラ操作は、`InputMappingContext` / `InputAction` が `.uasset`（0 章）なので Enhanced Input を使わず、Tick で `APlayerController` から入力状態をポーリングして読む。人がアセットを作る段になれば Enhanced Input へ移せる。U3 で `ACubelithPlayerController` として実装（`PlayerTick` でのポーリング入力・押した瞬間のライントレースでのピックと選択・ドラッグでのグリッド移動・2 本指の 90 度回転）。`src/input` の純粋関数は `CubelithPickSamples` / `CubelithAxisMapping` / `CubelithTwoFingerGesture` / `CubelithFreeRotation` / `CubelithRotateInput`（`Source/CUBELITH/Public`）へ移した。回転中の 90 度に縛らない見せ方は `ACubelithPuzzleActor::SetFreeRotation`。**マウスの回転は右ボタンのドラッグ**（離した時点で最寄りの向きへ確定させる）で、これは HUD の回転モードのトグルと回転ギズモ（U4）までの仮の手段。U4 で手を離したときのマグネット・スナップ（`HandlePointerReleased` → `Cubelith::FSnapControl` / `Cubelith::FSnapMotion`）を足した（下の「スナップ」節） | AI（感度の調整は人） |
 | スナップの効果音（RULES.md 3.5） | MetaSounds（音そのものは人が作る）。鳴らす口は AI 側にあり、`ACubelithGameMode::SnapSound`（`UPROPERTY(EditAnywhere, Category = "Cubelith|Audio")` の `TObjectPtr<USoundBase>`）に割り当てると `ACubelithGameMode::PlaySnapSound` が `UGameplayStatics::PlaySound2D` で鳴らす。**割り当てが無ければ鳴らない**（警告も出さない）。差し替え方は下の「スナップ」節 | 人と AI |
 | クリア演出（RULES.md 5.2） | 発光は Material Parameter Collection、パーティクルは Niagara（原典 5.2）、カメラの旋回は C++ | 人と AI |
-| UI（RULES.md 6 章） | UMG。C++ の基底クラス（`BindWidget`）と、人が作るレイアウト。縦持ちの画面に合わせる | 人と AI |
+| UI（RULES.md 6 章） | UMG。**振る舞いは C++ の基底クラス**（`UCubelithScreenWidget` と `BindWidgetOptional`）、**レイアウトは人が作る**。人のレイアウトが無い間は C++ だけで組んだ仮の画面を出す（下の「画面（UI）」節）。縦持ちの画面に合わせ、ボタンは 44 px 以上。U4 でタイトル / 難易度選択と画面の切り替え・セッションの作り直しが入った | 人と AI |
 | セーブ（RULES.md 3.8） | `USaveGame` を `UGameplayStatics::SaveGameToSlot` で保存する。保存先・保存する形・壊れたデータの扱いは下の「セーブ」節。盤面が変わるたびと、アプリがバックグラウンドに入るとき（`FCoreDelegates` のアプリのライフサイクルの通知）に書く。モバイルでは裏に回ったアプリが OS に終了させられることがあるため | AI |
 | ライティング（原典 4.1） | ディレクショナルライト 1 灯 + HDRI | 人 |
 
@@ -103,7 +103,77 @@ RULES.md 3.8 の「覚えている 3 つ」を `USaveGame` で保存する。実
 - 途中の盤面が使えない形 → **盤面だけ捨てて難易度とクリア回数は生かす**（Web 版の `parseSaveData` と同じ）。弾くのは、難易度が範囲外・`Seed` が 0..4294967295 の外・配置が空・配置数が難易度の M と食い違う・向きが 0..23 の外・`PieceId` が重複・固定の id が配置に無い / 重複・`Remaining` が 0..配置数の外。復元して初期配置に使う前にはさらに `ProgressFitsPieces` で「生成したピースの id とちょうど 1 対 1 か」を見る
 - クリア回数 → 負の合計は 0 に、負の回数のキーは落とす（回数は遊びの進行に影響しないので、全体を捨てるより残すほうが損が小さい）
 
+**繋いだところ**: 「最後に選んだ難易度」の読み出し（タイトルの初期選択。下の「画面（UI）」節）。
+
 **まだ繋いでいないこと**: 保存のタイミング（盤面が変わるたび・バックグラウンドに入るとき）と「続きから」・クリア回数の表示は後続タスクで `ACubelithGameMode` から繋ぐ。ここまでは形と純粋関数・スロットへの読み書きの器だけ。Automation Test（`CUBELITH.Render.Progress.*` / `CUBELITH.Render.Save.*`）は実際のスロットへ読み書きしない（エディタの `Saved/` を汚さないため）ので、検証・更新の純粋関数を直接呼んで確かめている
+
+### 画面（UI）
+
+RULES.md 2 章のコアゲームループと 6 章の画面を UMG で作る。**画面のレイアウトの `.uasset`（ウィジェットブループリント）は人が作る**（0 章）ので、このリポジトリに入っているのは「振る舞いを持つ C++ の基底クラス」と「人のレイアウトが無いときだけ使う仮の見た目」。移植元は Web 版の `WebMock/src/ui/`（`screens.ts` / `titleScreen.ts` / `widgets.ts`）。
+
+**仮の画面を C++ だけで作る仕組み**（`Source/CUBELITH/Public/CubelithScreenWidget.h`）
+
+| 役目 | 実装 |
+|---|---|
+| 画面 1 つ分の基底 | `UCubelithScreenWidget : UUserWidget`。派生クラスが `BuildFallbackLayout`（仮のレイアウトを組む）と `BindBehavior`（部品に振る舞いを付ける）を実装する |
+| 人のレイアウトがあるかの判定 | `WidgetTree->RootWidget` の有無。ウィジェットブループリントから作ったウィジェットは必ず根の部品を持ち、C++ のクラスから直接作ったものは必ず持たない（`UUserWidget::Initialize` が空の `UWidgetTree` を作るだけ）。**無いときだけ** `UWidgetTree::ConstructWidget` で C++ からレイアウトを組む。部品を 1 つも置いていないウィジェットブループリントも「無い」側に入る |
+| 部品の受け取り | `UPROPERTY(meta = (BindWidgetOptional))`。**`BindWidget` ではなく必ず Optional にする**（埋まっていない部品は触らないだけなので、人のレイアウトに一部が無くても落ちない） |
+| 振る舞いの置き場所 | `BindBehavior`。仮の画面でも人のレイアウトでも呼ばれるので、**押したときの処理はここだけに書く**（仮のレイアウトを組むときには結ばない） |
+| ボタン 1 個 | `ConstructButton(親, ラベル, 押したときの処理, 最小の横幅)`。指で押せる大きさ（RULES.md 6 章の 44 px 以上 = `Cubelith::MinTouchTargetPx`）を `USizeBox` で確保する。HUD・クリア画面でも同じヘルパを使う |
+| ラムダを結ぶ仕組み | `UButton::OnClicked` は動的デリゲートで `UFUNCTION` しか結べないので、`UCubelithButtonAction`（`UFUNCTION` 1 つと `TFunction<void()>` 1 つを持つ小さな `UObject`）を挟む。これで「N = 4 のボタン」のように値ごとに違う処理をラムダで書ける。寿命は画面のウィジェットが握る |
+| その他のヘルパ | `ConstructCenteredPanelRoot`（中央寄せのパネル）・`ConstructText`・`ConstructRow`・`SetButtonSelected`（選択を色で見せる）・`SetTextSafe` |
+
+- 仮の見た目は縦持ちの画面を前提に、**色とフォントの指定は最小限**にする（文字が読める・押せる・選んでいるものが分かるだけ。人が UMG で作り直す前提）。フォントは既定のまま使い（日本語は Slate の代替フォントで出る）、文字の大きさだけ指定する
+- 文言は `FText::FromString` で日本語を直接書く（対応する言語が未定なのでローカライズの仕組みは入れない。10 章）
+
+**画面と切り替えの持ち主**
+
+| 画面 | クラス | 状態 |
+|---|---|---|
+| タイトル / 難易度選択（RULES.md 6 章） | `UCubelithTitleWidget`（`CubelithTitleWidget.h`） | 入っている。N（3〜7）・M のプリセット・パズルの回転・シードの表示・「開始」。**「続きから」とクリア回数の表示は後続タスク** |
+| プレイ中の HUD | — | 後続タスク（`PlayWidgetClass` が空） |
+| クリア | — | 後続タスク（`ClearWidgetClass` が空） |
+
+- **解釈: ウィジェットの生成・`AddToViewport`・`RemoveFromParent` は `ACubelithGameMode` 1 箇所にまとめる**（`ACubelithPlayerController` ではない）。どの画面を出すかは「セッションが有るか・クリアしたか」= GameMode が持つ状態で決まり、画面の入れ替えとセッションの作り直しを同じ場所で行えると順序の取り違えが起きないため。人が差し替える口（`TSubclassOf`）も効果音（`SnapSound`）と同じ場所に集まる
+- 今どの画面かは `ECubelithScreen`（`None` / `Title` / `Play` / `Clear`。`screens.ts` の `ScreenName`）。切り替えは `ACubelithGameMode::BeginScreen` が**前の画面を必ず `RemoveFromParent` してから**作る（`screens.ts` の `show` が前の画面を `dispose` するのと同じ）。クラスが空の画面は「前の画面を外すだけ」になるので、HUD とクリア画面を後から載せられる
+- 入力は `ACubelithPlayerController::BeginPlay` で `FInputModeGameAndUI` にしてある（画面のボタンとゲームの操作を同時に効かせる。マウスを掴むのは押している間だけなので、カメラの旋回とピースのドラッグはそのまま通る。カーソルは掴んでいる間も出したまま）
+
+**人が UMG へ差し替える手順**
+
+1. エディタで Widget Blueprint を作り、親クラスに差し替えたい画面の C++ クラス（タイトルなら `CubelithTitleWidget`）を選ぶ
+2. その C++ クラスの `BindWidgetOptional` と**同じ名前・代入できる型**で部品を置く。タイトルは `TitleText`・`LeadText`（`UTextBlock`）、`SpaceSizeRow`・`PieceCountRow`・`RotationRow`（`UPanelWidget`。`UHorizontalBox` などでよい）、`SummaryText`・`SeedText`（`UTextBlock`）、`StartButton`（`UButton`）。名前が合っていれば C++ がそこへ値と処理を流す。要らない部品は置かなくてよい（`SummaryText` が無ければまとめの行が出ないだけ）
+3. 選択肢のボタン（N / M / 回転）は**数が N で変わるので C++ が並べる**。人が置くのは入れ物（`SpaceSizeRow` など）だけで、中身は C++ が作って入れ替える
+4. `ACubelithGameMode` の Blueprint 派生（効果音の割り当てと同じもの）で `TitleWidgetClass`（カテゴリ `Cubelith|UI`）を作ったウィジェットブループリントに差し替える。`Config/DefaultEngine.ini` の `GlobalDefaultGameMode` がその Blueprint を指していること
+5. 根の部品が無い（何も置いていない）ウィジェットブループリントを指した場合は、仮のレイアウト（C++）に落ちる。`StartButton` が無いと「開始」を押せないので `LogCubelith` に警告が出る
+
+**セッション（パズル 1 回分）**
+
+`ACubelithGameMode` が RULES.md 2 章のコアゲームループを持つ。難易度（N / M / パズルの回転）+ シードの 1 組を「セッション」として作る / 畳む / 作り直す。
+
+| 口 | すること |
+|---|---|
+| `ShowTitle(N, M, 回転, シード)` | 走っているセッションを畳んでタイトルを出す（初期選択とシードは呼び出し側が決める） |
+| `ReturnToTitle()` | 直前の難易度が選ばれた状態でタイトルへ戻る（シードは引き直す。RULES.md 2 章の「難易度を変える」「難易度へ戻る」） |
+| `StartSession(N, M, 回転, シード)` | 生成 → 初期散らし → `Cubelith::FGame` → `ACubelithPuzzleActor` → 軌道カメラの距離合わせ → プレイ中の画面へ。N は 3..7、M は N ごとのプリセットへ寄せる |
+| `RestartWithNewSeed()` | 同じ難易度でシードだけ引き直して作り直す（RULES.md 2 章の「もう一度」「次の問題」） |
+| `EndSession()` | タイマー・ピースのアクタ・ゲーム状態・クリアの仮表示を畳み、`ACubelithPlayerController::ResetForNewSession` で選択・ドラッグ・スナップも白紙に戻す |
+| `DrawRandomSeed()` | 新しいシードを引く（`difficulty.ts` の `randomSeed`。時刻と呼んだ回数で撒いた `FRandomStream` から 32 bit） |
+
+- セッションの間は生成結果（`Cubelith::FGeneratedPuzzle` の `Pieces` と `Solution`・N / M / シード）とパズルの回転をメンバに持つ（`GetSessionPuzzle` / `GetSessionSeed` / `GetSessionSpaceSize` / `GetSessionPieceCount` / `IsRotationAllowed` / `HasSession`）。後続タスクのヒントが `Solution`、散らし直しが同じシード、セーブが難易度とシードを読む
+- 起動時（`BeginPlay`）はタイトルを出すだけで、**パズルは「開始」を押してから作る**
+- 軌道カメラの距離合わせ（`TryFrameCamera`）はセッションを作るたびに掛け直す（N が変われば収める大きさも変わる）
+- ピースの形は同じ N / M でもシードで変わるので、作り直すときは `ACubelithPlayerController` のスナップの制御（`Cubelith::FSnapControl`）も必ず作り直す（ピース数の一致では判定しない）
+
+**タイトルの初期選択**（7.7 の外部指定とセーブの関係）
+
+- 優先順位は **外部指定（7.7 の `?n=` / `?m=` / `?rot=` とコマンドライン）> セーブの「最後に選んだ難易度」（RULES.md 3.8）> `ACubelithGameMode` の `UPROPERTY` の既定**（Web 版 `WebMock/src/main.ts` の `initialSettings` と同じ）
+- 解釈: セーブの難易度は `Cubelith::ResolveDifficulty` の「`UPROPERTY` の既定」の位置へ差し込む。こうすると解釈の純粋関数とそのテスト（`CUBELITH.Render.Difficulty.*`）を触らずに順位を作れる。セーブが無いときだけ `UPROPERTY` が効くよう、`UGameplayStatics::DoesSaveGameExist` でスロットの有無を先に見る（ログの経路「プロパティ」は、セーブがあればセーブの値のこと。何を渡したかは 1 行前に出る）
+- シードは外部指定があればその値、無ければ引き直し（シードは保存しない。RULES.md 3.8）。タイトルへ戻るたび・「もう一度」のたびに引き直す
+- **外部指定が効くのは初期選択まで**。「開始」を押したときはタイトルで選ばれている値で始まる（7.7 の口は検証用に残す）
+
+Automation Test は `CUBELITH.Render.TitleWidget.*`（仮のレイアウトが組まれること・初期選択をプリセットへ寄せること・N を変えると M のプリセットが作り直されて選択が引き継がれること・「開始」が選ばれている値を渡すこと）。Slate の実体は作らず、`UUserWidget::Initialize` と `UCubelithScreenWidget::PrepareLayout` で部品の木だけを組み、ボタンは `UButton::OnClicked` を直に鳴らして押す（`UWorld` が要らないので `-nullrhi` のコマンドラインでも走る）。
+
+画面の見え方（色・大きさ・並び）と実機の操作は機械判定できないので、人がエディタで確認する（9 章）。
 
 ## 7. 技術構成
 
@@ -236,7 +306,7 @@ RULES.md 3.1 の 3 項目を、シードと同じ 3 通りの方法で指定で�
 - 解釈: `?n=`（値が空）は「指定なし」と区別できないので、シードと同じく警告を出さずに次へ落とす
 - 解釈: `?n=` / `?m=` は Web 版の URL クエリと同じ名前。Web 版の URL クエリに無い「パズルの回転」は UE 版で `?rot=` と決めた。コマンドラインは `-CubelithSeed=` と揃えて `-Cubelith` の前置きを付ける（`-n=` のような一般的すぎる名前はエンジンや他の機能とぶつかりうる）
 
-画面（タイトル / 難易度選択）で難易度を選ぶ仕組みは U4 で足す。ここで足したのは外から指定する口だけで、U4 が入ってもこの口は検証用に残す。
+画面（タイトル / 難易度選択）で難易度を選ぶ仕組みは U4 で足した（4 章の「画面（UI）」節）。**外部指定はタイトルの初期選択になり**（優先順位は 外部指定 > セーブの「最後に選んだ難易度」> `UPROPERTY` の既定）、「開始」を押したときはタイトルで選ばれている値で始まる。この口は検証用に残す。
 
 ## 8. 実装の段階（マイルストーン）
 
@@ -246,7 +316,7 @@ RULES.md 3.1 の 3 項目を、シードと同じ 3 通りの方法で指定で�
 | U1 | ゲームロジックの移植: RULES.md 3 章（グリッド・向き・乱数・生成・散らし・クリア判定・スナップ・固定とヒント）+ テスト + 照合データ | AI | テストが通り、照合データと一致する |
 | U2 | 描画: ピースを ISM で表示、散らばった初期配置、軌道カメラ（マテリアルは仮）、シードの外部指定（7.7）。7.2 の座標変換・`ACubelithGameMode`・`ACubelithPuzzleActor`・`ACubelithOrbitPawn` が入った | AI | 生成結果が見える |
 | U3 | 操作: 選択・グリッド移動・90 度回転・クリア検知（演出なし）、難易度の外部指定（7.7）。`ACubelithPlayerController`（ポーリング入力・ライントレースでのピックと選択・ドラッグ移動・2 本指のジェスチャ）と、`ACubelithPuzzleActor` の選択の強調 / 自由回転の見せ方（`SetFreeRotation`）・`ACubelithGameMode` のクリアの仮表示が入った。回転は「あり」の盤面（`?rot=1` / `-CubelithRotation=1`）でだけ効き、タッチは 2 本指のスワイプ / ひねり、マウスは右ボタンのドラッグ（仮の手段）。スナップ・HUD・回転モードのトグル・回転ギズモは U4 | AI | 手でクリアできる |
-| U4 | 手触り: スナップと効果音、HUD、画面での難易度選択、固定・ヒント・次の問題、セーブ（10 章） | AI と人 | 一通り遊べる |
+| U4 | 手触り: スナップと効果音、HUD、画面での難易度選択、固定・ヒント・次の問題、セーブ（10 章）。スナップと効果音・セーブの形と読み書き・タイトル / 難易度選択の画面と画面の切り替え・`ACubelithGameMode` のセッション（作る / 畳む / 作り直す）が入った（4 章の「スナップ」「セーブ」「画面（UI）」節）。HUD・固定・ヒント・次の問題・クリア画面・セーブの保存のタイミングは残り | AI と人 | 一通り遊べる |
 | U5 | 演出と質感: クリア時の発光・融合・パーティクル・カメラ旋回、すりガラス | 人と AI | 見せられる |
 | U6 | 最適化とモバイル: 実機で目標の fps、タッチ操作の調整 | 人と AI | 実機で遊べる |
 
