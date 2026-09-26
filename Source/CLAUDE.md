@@ -44,7 +44,7 @@ Scripts/                  ビルド・テスト・エディタ起動
 1. **`CUBELITHCore` は `Core` モジュールにだけ依存する**（`CoreUObject`・`Engine` を足さない。UObject・`UPROPERTY` を使わない）。`Json` は照合データを読むテストからだけ使う（`Docs/SPEC_UE.md` 7.1）
 2. `CUBELITHCore` のファイルは `WebMock/src/core` と 1 対 1 に対応させ（`grid.ts` → `Grid.h` / `Grid.cpp`）、関数名も揃える。**挙動は WebMock の実装が正**（RULES.md 3.6）。移植で結果がずれやすい点（`uint32` と `double`・`TMap` の順序・安定ソート）は `Docs/SPEC_UE.md` 7.1
 3. ロジックの座標は Web 版と同じ（Y が上の整数グリッド、向きは 0..23 の id）。UE の座標への変換は描画のときだけ（`Docs/SPEC_UE.md` 7.2）
-4. テストは `Source/CUBELITHCore/Private/Tests/` に置き、名前は `CUBELITH.Core.<分野>.<内容>`、フラグは `EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::ProductFilter`。WebMock の `tests/` を移植し、照合データとの一致を確かめる。`CUBELITHCore` に関数を足したらテストも足す
+4. テストは `Source/CUBELITHCore/Private/Tests/` に置き、名前は `CUBELITH.Core.<分野>.<内容>`、フラグは `EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::ProductFilter`。WebMock の `tests/` を移植し、照合データとの一致を確かめる。`CUBELITHCore` に関数を足したらテストも足す。`CUBELITH`（描画・入力・UI）側のテストは `Source/CUBELITH/Private/Tests/` に置き、名前は `CUBELITH.Render.<分野>.<内容>` にする（フラグは同じ）
 5. `Scripts/Test.ps1` が通る状態でしか作業を終えない（描画・入力・UI だけの変更は `Scripts/Build.ps1`）
 6. **`.uasset` / `.umap` を作らない・編集しない**（人が作る。`Docs/SPEC_UE.md` 0 章）。人が調整する値は `UPROPERTY(EditAnywhere)` で公開し、Blueprint はアセットの割り当てに留める。MCP でエディタを操作できても、アセットは変えない
 7. 照合データ（`Private/Tests/Fixtures/`）は手で編集しない。作り直すときは `npm --prefix WebMock run export:fixtures`（`Docs/FIXTURES.md`）
