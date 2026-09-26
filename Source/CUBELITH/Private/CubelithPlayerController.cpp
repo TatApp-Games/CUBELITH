@@ -76,6 +76,15 @@ void ACubelithPlayerController::BeginPlay()
 	// 半径ごとに固定なので 1 度だけ作って使い回す（pieceInput.ts の TOUCH_PICK_OFFSETS / PRECISE_PICK_OFFSETS）
 	EnsurePickOffsets();
 
+	// 画面（UMG）のボタンとゲームの操作を同時に効かせる（Docs/SPEC_UE.md 4 章の UI）。
+	// 既定の「ゲームだけ」だとビューポートがマウスを掴んだままになり、タイトルのボタンを押せないことがある。
+	// 掴むのは押している間だけ（FInputModeGameAndUI の既定）なので、カメラの旋回とピースのドラッグはそのまま通る。
+	// カーソルは掴んでいる間も出したまま（ドラッグ中に消えると狙いを付け直せない）
+	FInputModeGameAndUI InputMode;
+	InputMode.SetHideCursorDuringCapture(false);
+	InputMode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
+	SetInputMode(InputMode);
+
 	// 未選択なので旋回は有効。Pawn がまだ湧いていなくても bOrbitEnabled の既定値が同じなので困らない
 	UpdateOrbitEnabled();
 
@@ -485,6 +494,35 @@ void ACubelithPlayerController::ApplySnapOffsets()
 			PuzzleActor->SetViewOffset(Update.PieceId, Update.Offset);
 		}
 	}
+}
+
+void ACubelithPlayerController::ResetForNewSession()
+{
+	// 走っている自由回転は確定させずに捨てる（書き戻す先の盤面ごと消えるため。
+	// CommitRotateDrag を通すと消えた FGame を触りに行く）
+	DragMode = ECubelithDragMode::None;
+	DragPieceId = INDEX_NONE;
+	DragAppliedRight = 0;
+	DragAppliedUp = 0;
+	FreeRotationQuat = FQuat::Identity;
+	bTwoFingerActive = false;
+
+	// ポーリング入力の「前フレームの押下状態」も戻す（画面が切り替わった直後に
+	// 押しっぱなしの指 / ボタンを立ち上がりとして拾わないように）
+	bWasTouchDown = false;
+	bWasMouseDown = false;
+	bWasRightMouseDown = false;
+
+	SelectedPieceId = INDEX_NONE;
+
+	// 次に使うときに新しい盤面のピースで作り直させる（ヘッダの「解釈:」のとおり形が変わる）
+	SnapControlPieceCount = 0;
+	// 走っている補間は打ち切る。表示上のずれを戻す相手（前の盤面のアクタ）はこの後すぐ消えるので流さない
+	SnapMotion.CancelAll(SnapOffsetBuffer);
+	SnapOffsetBuffer.Reset();
+
+	// 未選択に戻したので軌道カメラの旋回を戻す
+	UpdateOrbitEnabled();
 }
 
 void ACubelithPlayerController::EnsureSnapControl()
