@@ -43,16 +43,20 @@ public:
 	bool bAllowRotation = false;
 
 	/**
-	 * 乱数シード。−1（負の値）= 起動ごとにランダム、0..4294967295 = その値を uint32 として使う。
+	 * 乱数シード。−1（負の値）= 指定なし、0..4294967295 = その値を uint32 として使う。
 	 *
 	 * 解釈: RULES.md 3.1 のシードは符号なし 32 bit だが、uint32 は UPROPERTY にできないので int64 で持つ。
-	 * ランダムに引いたときは実際の値を LogCubelith に出すので、同じパズルを再現したいときは
-	 * その値をここに入れる。外から（コマンドライン・UI）指定する仕組みは後続タスクで足す。
+	 * マップ URL のオプション `?seed=` とコマンドライン引数 `-CubelithSeed=` のほうが優先される
+	 * （Docs/SPEC_UE.md 7.7）。どれも無ければランダムに引き、実際に使った値を LogCubelith に出すので、
+	 * 同じパズルを再現したいときはその値をここか `?seed=` に入れる。
 	 */
 	UPROPERTY(EditAnywhere, Category = "Cubelith|Puzzle", meta = (ClampMin = "-1"))
 	int64 Seed = -1;
 
 protected:
+	/** マップ URL のオプション `?seed=` を受け取る（Docs/SPEC_UE.md 7.7）。解釈は BeginPlay で行う */
+	virtual void InitGame(const FString& MapName, const FString& Options, FString& ErrorMessage) override;
+
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
@@ -60,7 +64,11 @@ private:
 	/** 生成 → 初期散らし → FGame → 表示 → カメラ合わせ（Docs/SPEC_UE.md 8 章 U2 の開始処理） */
 	void StartPuzzle();
 
-	/** Seed の決め方（上のコメントの規則）。ランダムに引いたときはログに出す */
+	/**
+	 * 実際に使うシードを決める（Docs/SPEC_UE.md 7.7 の優先順位）。
+	 * コマンドラインとランダムの控えをここで用意し、解釈そのものは Cubelith::ResolveSeed に任せる。
+	 * 選んだ値とその経路、無視した不正な指定をログに出す
+	 */
 	uint32 ResolveSeed();
 
 	/**
@@ -81,6 +89,9 @@ private:
 	 * 配置が変わると OnChange から PuzzleActor->UpdatePlacements が呼ばれる
 	 */
 	TUniquePtr<Cubelith::FGame> Game;
+
+	/** InitGame で読んだマップ URL のオプション `?seed=` の値。未指定なら空文字 */
+	FString SeedOptionText;
 
 	/** TryFrameCamera の再試行タイマー */
 	FTimerHandle FrameCameraTimer;

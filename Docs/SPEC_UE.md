@@ -29,13 +29,13 @@
 
 | ルール / WebMock の該当箇所 | UE 版の実装手段（案） | 担当 |
 |---|---|---|
-| ピースの描画（`src/render/pieces.ts`） | 1 ピース = 1 `UInstancedStaticMeshComponent`（原典 4.1）。ボクセルの位置は 7.2 の変換で UE の座標へ直す | AI |
+| ピースの描画（`src/render/pieces.ts`） | 1 ピース = 1 `UInstancedStaticMeshComponent`（原典 4.1）。ボクセルの位置は 7.2 の変換で UE の座標へ直す。U2 で `ACubelithPuzzleActor` として実装（ワールド原点 = 解答空間の中心）。仮のメッシュ / マテリアルはエンジンの `/Engine/BasicShapes/Cube` と `BasicShapeMaterial` で、ピースごとに `UMaterialInstanceDynamic` の色を変えている | AI |
 | すりガラス（原典 4.2） | 半透明マテリアル（Roughness 高め）+ Fake 屈折 | 人 |
 | 内部発光コア（`src/render/glowCores.ts`） | Emissive をサイン波で明滅させるマテリアル。ピースごとの位相はインスタンスごとの値（Per-Instance Custom Data）で渡す | 人（値の受け渡しは AI） |
 | 選択・スナップ候補の発光（RULES.md 3.3 / 5.1） | マテリアルのパラメータ | 人と AI |
 | 固定の鍵アイコン（RULES.md 6 章） | 未定 | — |
-| 軌道カメラ（`src/render/camera.ts`） | 注視点まわりの軌道カメラを C++ で | AI |
-| 入力（`src/input/`） | Enhanced Input（タッチとマウス）+ ライントレースでピースを選ぶ。純粋関数（`axisMapping` / `twoFingerGesture` など）はテストごと C++ へ移す | AI（感度の調整は人） |
+| 軌道カメラ（`src/render/camera.ts`） | 注視点まわりの軌道カメラを C++ で。U2 で `ACubelithOrbitPawn`（`USpringArmComponent` + `UCameraComponent`）として実装し、`ACubelithGameMode` が開始時にパズルへ合わせる | AI |
+| 入力（`src/input/`） | ライントレースでピースを選ぶ。純粋関数（`axisMapping` / `twoFingerGesture` など）はテストごと C++ へ移す。U2 のカメラ操作は、`InputMappingContext` / `InputAction` が `.uasset`（0 章）なので Enhanced Input を使わず、Tick で `APlayerController` から入力状態をポーリングして読む。人がアセットを作る段になれば Enhanced Input へ移せる | AI（感度の調整は人） |
 | スナップの効果音（RULES.md 3.5） | MetaSounds | 人 |
 | クリア演出（RULES.md 5.2） | 発光は Material Parameter Collection、パーティクルは Niagara（原典 5.2）、カメラの旋回は C++ | 人と AI |
 | UI（RULES.md 6 章） | UMG。C++ の基底クラス（`BindWidget`）と、人が作るレイアウト。縦持ちの画面に合わせる | 人と AI |
@@ -82,6 +82,7 @@ WebMock/                  Web 版（参照実装と照合データの出どこ�
 
 ### 7.3 テストと照合データ
 
+- `CUBELITH`（描画・入力・UI）側の Automation Test は `Source/CUBELITH/Private/Tests/` に置き、名前は `CUBELITH.Render.<分野>.<内容>` にする（`Scripts/Test.ps1` の既定のフィルタ `CUBELITH.` で `CUBELITH.Core.*` と一緒に走る）
 - ゲームロジックは UE の Automation Test で保証する。WebMock の `tests/` を移植する。テストは `Scripts/Test.ps1` で回す（ビルドしてから `UnrealEditor-Cmd.exe` を `-nullrhi` で起動し、書き出された結果の JSON で合否を決める）。Launcher 版のエンジンでそのまま使える
 - 照合データ（RULES.md 3.6）: WebMock が書き出した JSON を `Source/CUBELITHCore/Private/Tests/Fixtures/` に置く（28 ファイル）
   - **JSON の形と作り方は `FIXTURES.md`**（照合データの形の正）。書き出しは WebMock の `npm run export:fixtures`（ルートからは `npm --prefix WebMock run export:fixtures`）
@@ -118,13 +119,42 @@ WebMock/                  Web 版（参照実装と照合データの出どこ�
 - エディタが開いているときだけ使える。そのため Auto_Tasks のタスクの完了条件（verify）には使わず、対話のセッションで補助に使う
 - MCP で AI がアセットを変えても、`.uasset` の差分は読めない。「`.uasset` は人が作る」（0 章）は変えない
 
+### 7.7 乱数シードの指定
+
+RULES.md 3.1 の「検証のために外から指定できるようにする」を UE 版でどう行うか。生成（`GeneratePuzzle`）と初期散らし（`ScatterPlacements`）には同じ値が渡るので、シードが同じなら同じパズルと同じ散らばり方になる。実装は `Source/CUBELITH/Public/CubelithSeed.h`（解釈の純粋関数）と `ACubelithGameMode`（読み取りと適用）。
+
+決め方は次の優先順位で、上から順に見て最初に見つかった有効な値を使う。
+
+| 順 | 指定の方法 | 書き方 | 読む場所 |
+|---|---|---|---|
+| 1 | マップ URL のオプション | `?seed=123` | `AGameModeBase::InitGame` で `UGameplayStatics::ParseOption` |
+| 2 | コマンドライン引数 | `-CubelithSeed=123` | `FParse::Value(FCommandLine::Get(), ...)` |
+| 3 | `ACubelithGameMode` の `UPROPERTY` | `Seed`（−1 = 指定なし） | エディタの Details / Blueprint の既定値 |
+| 4 | （どれも無ければ）ランダム | — | 時刻で撒いた `FRandomStream` から 32 bit |
+
+書き方の例:
+
+- PIE のコンソール（`~`）で `open /Game/Maps/Main?seed=123`
+- パッケージ版・エディタの起動引数にマップごと渡す: `CUBELITH.exe /Game/Maps/Main?seed=123`
+- コマンドライン: `CUBELITH.exe -CubelithSeed=123`（マップを指定しないときはこちら）
+- エディタで `ACubelithGameMode` の `Seed` を 123 にする（URL もコマンドラインも無いときに効く）
+
+有効な値と不正値の扱い:
+
+- 有効なのは **0..4294967295 の 10 進整数だけ**（RULES.md 3.1 の符号なし 32 bit）。符号（`+1` / `-1`）・前後の空白・`12a` のような途中まで数字・16 進は受け付けない
+- **不正な値は丸めずに無視して次の優先順位へ落とす**（Web 版と同じ。`WebMock/src/ui/params.ts` の `parseSeedParam`）。範囲外を丸めると `?seed=-1` と `?seed=0` が同じ盤面になり、「指定した値と盤面の対応」が壊れるため
+- 無視したときは `LogCubelith` に警告を 1 行出す。実際に使ったシードとその経路（URL オプション / コマンドライン / プロパティ / ランダム）も毎回ログに出るので、ランダムに引いた盤面も後から再現できる
+- 解釈: `?seed=`（値が空）は「指定なし」と区別できない（`ParseOption` は未指定でも空文字を返す）ので、警告を出さずに次へ落とす。`Seed` の負の値も同じく「指定なし」
+
+Web 版の `?seed=` と同じオプション名・同じ範囲にしてあるので、**同じ N / M / パズルの回転と同じシードなら Web 版と UE 版で同じパズルが出る**（RULES.md 3.6）。難易度（N / M / 回転）を外から指定する仕組みは U4（難易度選択）で足す。
+
 ## 8. 実装の段階（マイルストーン）
 
 | 段階 | 内容 | 担当 | 完了の目安 |
 |---|---|---|---|
 | U0 | 雛形: `.uproject` と C++ モジュール 2 つ（7.1）・テスト、`.gitignore` / `.gitattributes`（7.4）、エディタの MCP（7.6）、UE 用の CLAUDE.md（`Source/CLAUDE.md`。コマンド・開発ルール・タスクの切り方）。2026-09-26 に完了 | 人と AI | コマンドラインでビルドとテストが通る |
 | U1 | ゲームロジックの移植: RULES.md 3 章（グリッド・向き・乱数・生成・散らし・クリア判定・スナップ・固定とヒント）+ テスト + 照合データ | AI | テストが通り、照合データと一致する |
-| U2 | 描画: ピースを ISM で表示、散らばった初期配置、軌道カメラ（マテリアルは仮） | AI | 生成結果が見える |
+| U2 | 描画: ピースを ISM で表示、散らばった初期配置、軌道カメラ（マテリアルは仮）、シードの外部指定（7.7）。7.2 の座標変換・`ACubelithGameMode`・`ACubelithPuzzleActor`・`ACubelithOrbitPawn` が入った | AI | 生成結果が見える |
 | U3 | 操作: 選択・グリッド移動・90 度回転・クリア検知（演出なし） | AI | 手でクリアできる |
 | U4 | 手触り: スナップと効果音、HUD、難易度選択、固定・ヒント・次の問題、セーブ（10 章） | AI と人 | 一通り遊べる |
 | U5 | 演出と質感: クリア時の発光・融合・パーティクル・カメラ旋回、すりガラス | 人と AI | 見せられる |

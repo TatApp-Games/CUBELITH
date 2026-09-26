@@ -2,17 +2,33 @@
 
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
+#include "Kismet/GameplayStatics.h"
 #include "Math/RandomStream.h"
+#include "Misc/CommandLine.h"
 #include "Misc/DateTime.h"
+#include "Misc/Parse.h"
 #include "TimerManager.h"
 
 #include "CubelithLog.h"
 #include "CubelithOrbitPawn.h"
 #include "CubelithPuzzleActor.h"
+#include "CubelithSeed.h"
 #include "Generate.h"
 
 namespace
 {
+	/**
+	 * マップ URL のオプション名（`?seed=123`）。Web 版の `?seed=`（WebMock/src/ui/params.ts）と同じ書き方に
+	 * 揃えてあるので、同じシードを両方に渡せば同じパズルが出る（RULES.md 3.6・Docs/SPEC_UE.md 7.7）
+	 */
+	const TCHAR* SeedOptionKey = TEXT("seed");
+
+	/**
+	 * コマンドライン引数の前置き（`-CubelithSeed=123`）。`-seed=` のような一般的すぎる名前は
+	 * エンジンや他の機能とぶつかりうるので前置きを付ける（Docs/SPEC_UE.md 7.7）
+	 */
+	const TCHAR* SeedCommandLineKey = TEXT("CubelithSeed=");
+
 	/**
 	 * TryFrameCamera の再試行の間隔（秒）と上限。上限に達したら諦めて警告を出す。
 	 * 間隔をフレーム時間より短くしてあるのは、待つ相手（Pawn の生成と BeginPlay）が整った次の
@@ -28,6 +44,15 @@ ACubelithGameMode::ACubelithGameMode()
 	// マップ /Game/Maps/Main に PlayerStart が無ければ Pawn はワールド原点に湧く。軌道カメラの注視点は
 	// 立方体の中心（= パズルのアクタを置くワールド原点）なのでそれでよく、マップには手を入れない
 	DefaultPawnClass = ACubelithOrbitPawn::StaticClass();
+}
+
+void ACubelithGameMode::InitGame(const FString& MapName, const FString& Options, FString& ErrorMessage)
+{
+	Super::InitGame(MapName, Options, ErrorMessage);
+
+	// マップ URL（`open /Game/Maps/Main?seed=123`・起動引数のマップ指定）のオプションはここでしか受け取れない。
+	// 解釈は BeginPlay の ResolveSeed でまとめて行う。未指定なら ParseOption は空文字を返す
+	SeedOptionText = UGameplayStatics::ParseOption(Options, SeedOptionKey);
 }
 
 void ACubelithGameMode::BeginPlay()
@@ -126,27 +151,34 @@ void ACubelithGameMode::StartPuzzle()
 
 uint32 ACubelithGameMode::ResolveSeed()
 {
-	if (Seed >= 0 && Seed <= static_cast<int64>(MAX_uint32))
+	// コマンドライン引数 `-CubelithSeed=<0..4294967295>`。値が付いていなければ空文字のまま（= 未指定）
+	FString CommandLineText;
+	if (!FParse::Value(FCommandLine::Get(), SeedCommandLineKey, CommandLineText))
 	{
-		return static_cast<uint32>(Seed);
+		CommandLineText.Empty();
 	}
 
-	if (Seed > static_cast<int64>(MAX_uint32))
-	{
-		UE_LOG(LogCubelith, Warning,
-			TEXT("Seed=%lld は符号なし 32 bit に収まらないのでランダムに引き直す"), Seed);
-	}
-
-	// 起動ごとに変える。FMath::Rand はプラットフォームによって 15 bit しか返さないので、
-	// 時刻で種を撒いた FRandomStream から 32 bit まるごと取る
+	// どれも指定が無いときのために引いておく。起動ごとに変える必要があるが、FMath::Rand は
+	// プラットフォームによって 15 bit しか返さないので、時刻で種を撒いた FRandomStream から 32 bit まるごと取る
 	const FRandomStream Stream(static_cast<int32>(FDateTime::UtcNow().GetTicks() & static_cast<int64>(MAX_int32)));
 	const uint32 RandomSeed = Stream.GetUnsignedInt();
 
-	// 人が同じパズルを再現できるよう、引いた値を必ず残す（GameMode の Seed にこの値を入れれば同じになる）
-	UE_LOG(LogCubelith, Log, TEXT("シードをランダムに引いた: %u（再現するには GameMode の Seed にこの値を入れる）"),
-		RandomSeed);
+	const Cubelith::FSeedResolution Resolution =
+		Cubelith::ResolveSeed(SeedOptionText, CommandLineText, Seed, RandomSeed);
 
-	return RandomSeed;
+	// 打ち間違いに気付けるよう、無視した指定を 1 行にまとめて出す
+	if (Resolution.IgnoredInputs.Num() > 0)
+	{
+		UE_LOG(LogCubelith, Warning,
+			TEXT("シードの指定が不正なので無視した: %s（受け付けるのは 0..4294967295 の 10 進整数だけ）"),
+			*FString::Join(Resolution.IgnoredInputs, TEXT("、")));
+	}
+
+	// 人が同じパズルを再現できるよう、使った値と経路を必ず残す
+	UE_LOG(LogCubelith, Log, TEXT("シードを %s から決めた: %u（再現するには ?seed=%u か -CubelithSeed=%u）"),
+		Cubelith::SeedSourceToText(Resolution.Source), Resolution.Seed, Resolution.Seed, Resolution.Seed);
+
+	return Resolution.Seed;
 }
 
 bool ACubelithGameMode::TryFrameCamera()
